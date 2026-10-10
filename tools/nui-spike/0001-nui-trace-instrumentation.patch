@@ -1,0 +1,503 @@
+diff --git a/src/xenia/kernel/nui_trace.cc b/src/xenia/kernel/nui_trace.cc
+new file mode 100644
+index 000000000..024efeab9
+--- /dev/null
++++ b/src/xenia/kernel/nui_trace.cc
+@@ -0,0 +1,321 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2025 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++// PHASE 0 SPIKE INSTRUMENTATION - throwaway. See nui_trace.h.
++
++#include "xenia/kernel/nui_trace.h"
++
++#include <cstdio>
++#include <cstring>
++#include <chrono>
++#include <mutex>
++#include <string>
++#include <string_view>
++#include <system_error>
++#include <vector>
++
++#include "xenia/base/clock.h"
++#include "xenia/base/filesystem.h"
++#include "xenia/base/logging.h"
++#include "xenia/emulator.h"
++#include "xenia/kernel/kernel_state.h"
++#include "xenia/kernel/xconfig.h"
++#include "xenia/memory.h"
++
++DEFINE_int32(
++    log_nui_trace, 0,
++    "PHASE 0 SPIKE. NUI trace bitmask: 1=exports, 2=messages, 4=notify, "
++    "8=message buffer hexdump, 16=trace all exports (not just NUI-ish names).",
++    "Kernel");
++DEFINE_string(
++    nui_trace_filter, "",
++    "PHASE 0 SPIKE. Comma separated substrings overriding the default NUI-ish "
++    "export name filter.",
++    "Kernel");
++
++namespace xe {
++namespace kernel {
++namespace nui_trace {
++
++namespace {
++
++struct TraceState {
++  // timed_mutex, not mutex: Emit must be able to give up rather than block
++  // forever on a thread that is wedged inside the tracer.
++  std::timed_mutex lock;
++  std::FILE* file = nullptr;
++  uint64_t seq = 0;
++  uint64_t dropped = 0;
++  bool initialized = false;
++};
++
++// Default filter: everything a NUI client could plausibly call.
++constexpr const char* kDefaultFilter[] = {
++    "Nui",  "NUI", "Natal", "ControlPack", "controlpack", "Kinect",
++    "Usbcam", "UsbCam", "Biometric",
++};
++
++TraceState* state() {
++  static TraceState* s = new TraceState();
++  return s;
++}
++
++// Trace flags are captured once, at Init(). Reading the cvar on every call is not
++// safe: xenia rewrites and reloads xenia-canary.config.toml (which persists
++// log_nui_trace = 0) while a title is booting, and the cvar silently drops back to
++// 0 mid-session - which is exactly what happened in an early run, where tracing
++// stopped after 440 events with no error anywhere.
++int32_t g_flags = 0;
++
++std::vector<std::string> FilterSubstrings() {
++  // Cached: WantsExport() runs on every traced export call, and the "trace all
++  // exports" mode makes that hot.
++  static std::string cached_source;
++  static std::vector<std::string> cached;
++  const std::string& configured = cvars::nui_trace_filter;
++  if (configured == cached_source) {
++    return cached;
++  }
++  cached_source = configured;
++  cached.clear();
++  if (configured.empty()) {
++    for (auto* s : kDefaultFilter) {
++      cached.emplace_back(s);
++    }
++    return cached;
++  }
++  size_t pos = 0;
++  while (pos <= configured.size()) {
++    size_t next = configured.find(',', pos);
++    if (next == std::string::npos) {
++      next = configured.size();
++    }
++    std::string_view token =
++        std::string_view(configured).substr(pos, next - pos);
++    if (!token.empty()) {
++      cached.emplace_back(token);
++    }
++    pos = next + 1;
++  }
++  return cached;
++}
++
++std::string_view Hexdump(Memory* memory, uint32_t guest_ptr, uint32_t length) {
++  static thread_local std::string buffer;
++  buffer.clear();
++  // TranslateVirtual does no bounds checking, so refuse anything that cannot
++  // possibly be a guest buffer rather than faulting inside the emulator.
++  if (!memory || guest_ptr < 0x10000000 || guest_ptr > 0xC0000000 || !length) {
++    return {};
++  }
++  // Message buffers are small; cap the dump so a runaway length can't explode.
++  const uint32_t capped = length < 256 ? length : 256;
++  buffer.reserve(capped * 3 + 16);
++  const uint8_t* data = memory->TranslateVirtual<uint8_t*>(guest_ptr);
++  for (uint32_t i = 0; i < capped; ++i) {
++    if (i % 16 == 0) {
++      if (i) {
++        buffer.push_back(' ');
++      }
++      char offset[8];
++      snprintf(offset, sizeof(offset), "%04X:", i);
++      buffer.append(offset);
++    }
++    char byte[4];
++    snprintf(byte, sizeof(byte), "%02X", data[i]);
++    buffer.append(byte);
++    if (i % 16 != 15 && i + 1 != capped) {
++      buffer.push_back(' ');
++    }
++  }
++  if (length > capped) {
++    buffer.append("...");
++  }
++  return buffer;
++}
++
++void Emit(const char* kind, const char* name, uint32_t ordinal,
++          uint32_t thread_id, const std::string& detail) {
++  auto* s = state();
++
++  // seq, us, thread id, kind, name, ordinal, detail - all tab separated so the
++  // trace can be diffed/aggregated straight out of the file.
++  //
++  // Formatting happens before the lock (it is pure CPU work and must never be
++  // able to block), and the log mirror happens after it. Holding this lock
++  // across XELOGI deadlocks: another thread can be inside the logging subsystem
++  // and then call a traced export, so tracing waits on logging while logging
++  // waits on tracing. That killed tracing entirely in an early run.
++  char line[4096];
++  {
++    std::unique_lock<std::timed_mutex> guard(s->lock, std::defer_lock);
++    // Bounded wait: if some thread is wedged inside Emit, drop lines instead of
++    // losing the trace for the rest of the session.
++    if (guard.try_lock_for(std::chrono::milliseconds(50))) {
++      // Wall clock, not Clock::QueryHostTickCount(): that one is the guest tick
++      // counter, which barely advances while the guest is idle and made the
++      // timestamps useless for correlating a trace with a log.
++      const auto now = std::chrono::steady_clock::now().time_since_epoch();
++      const uint64_t us = static_cast<uint64_t>(
++          std::chrono::duration_cast<std::chrono::microseconds>(now).count());
++      const uint64_t seq = ++s->seq;
++
++      snprintf(line, sizeof(line), "%llu\t%llu\t%u\t%s\t%s\t0x%04X\t%s\n",
++               static_cast<unsigned long long>(seq),
++               static_cast<unsigned long long>(us), thread_id, kind, name,
++               ordinal, detail.c_str());
++
++      if (s->file) {
++        fputs(line, s->file);
++        // Line-buffered: a crash mid-run still leaves a usable trace.
++        fflush(s->file);
++      }
++    } else {
++      s->dropped++;
++    }
++  }
++  XELOGI("NUI|{}|{}|{}|{}", kind, name, ordinal, detail);
++}
++
++}  // namespace
++
++void Init(KernelState* kernel_state) {
++  g_flags = cvars::log_nui_trace;
++  if (g_flags == 0) {
++    return;
++  }
++  auto* s = state();
++  {
++    std::lock_guard<std::timed_mutex> guard(s->lock);
++    if (s->initialized) {
++      return;
++    }
++    s->initialized = true;
++
++    std::error_code ec = xe::filesystem::CreateFolder(
++        kernel_state->emulator()->storage_root() / "nui_trace");
++    if (ec) {
++      XELOGW("NUI_TRACE: cannot create the trace directory ({})",
++             ec.message());
++      s->file = nullptr;
++    } else {
++      s->file = xe::filesystem::OpenFile(
++          kernel_state->emulator()->storage_root() / "nui_trace" / "trace.tsv",
++          "wt");
++    }
++    if (s->file) {
++      fprintf(s->file, "# seq\tus\tthread\tkind\tname\tordinal\tdetail\n");
++      fflush(s->file);
++    }
++  }
++  // Note: Emit takes the lock itself, so nothing below may hold it.
++
++  // Boot state: the Kinect checkbox (console settings -> "Kinect Initialized")
++  // is what flips the guest into believing a Kinect exists.
++  if (kernel_state->xconfig()) {
++    const uint32_t retail_flags =
++        kernel_state->xconfig()->ReadSetting<uint32_t>(
++            XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS);
++    Emit("STATE", "retail_flags", 0, 0,
++         fmt::format("value=0x{:08X} KinectInitialized={} KinectDisabled={}",
++                     retail_flags,
++                     (retail_flags & X_RETAIL_FLAGS::KinectInitialized) ? 1
++                                                                        : 0,
++                     (retail_flags & X_RETAIL_FLAGS::KinectDisabled) ? 1 : 0));
++  }
++  Emit("STATE", "title_id", 0, 0,
++       fmt::format("value=0x{:08X}", kernel_state->title_id()));
++  Emit("STATE", "trace_flags", 0, 0,
++       fmt::format("value=0x{:X}", g_flags));
++}
++
++bool WantsExport(const char* name) {
++  if ((g_flags & kTraceExports) == 0) {
++    return false;
++  }
++  if (g_flags & kTraceAllExports) {
++    return true;
++  }
++  if (!name) {
++    return false;
++  }
++  for (auto& substring : FilterSubstrings()) {
++    if (strstr(name, substring.c_str())) {
++      return true;
++    }
++  }
++  return false;
++}
++
++void ExportCall(const char* name, uint16_t ordinal, uint32_t thread_id,
++                const uint64_t* regs) {
++  if (!WantsExport(name)) {
++    return;
++  }
++  char detail[256];
++  snprintf(detail, sizeof(detail),
++           "args=%08X,%08X,%08X,%08X,%08X,%08X,%08X,%08X",
++           static_cast<uint32_t>(regs[3]), static_cast<uint32_t>(regs[4]),
++           static_cast<uint32_t>(regs[5]), static_cast<uint32_t>(regs[6]),
++           static_cast<uint32_t>(regs[7]), static_cast<uint32_t>(regs[8]),
++           static_cast<uint32_t>(regs[9]), static_cast<uint32_t>(regs[10]));
++  Emit("EXPORT_IN", name, ordinal, thread_id, detail);
++}
++
++void ExportRet(const char* name, uint16_t ordinal, uint32_t thread_id,
++               uint64_t result) {
++  if (!WantsExport(name)) {
++    return;
++  }
++  char detail[64];
++  snprintf(detail, sizeof(detail), "ret=%08X",
++           static_cast<uint32_t>(result));
++  Emit("EXPORT_OUT", name, ordinal, thread_id, detail);
++}
++
++void Message(const char* source, uint32_t app_id, uint32_t message,
++             uint32_t buffer_ptr, uint32_t buffer_length, KernelState* state_in) {
++  if ((g_flags & kTraceMessages) == 0) {
++    return;
++  }
++  std::string detail =
++      fmt::format("app=0x{:08X} msg=0x{:08X} buf=0x{:08X} len={}",
++                  app_id, message, buffer_ptr, buffer_length);
++  if (g_flags & kTraceHexdump) {
++    auto* memory = state_in ? state_in->memory() : nullptr;
++    detail += " data=";
++    detail += Hexdump(memory, buffer_ptr, buffer_length);
++  }
++  Emit("MESSAGE", source, message, 0, detail);
++}
++
++void Notify(const char* name, uint32_t notification, uint32_t data) {
++  if ((g_flags & kTraceNotify) == 0) {
++    return;
++  }
++  Emit("NOTIFY", name, notification, 0, fmt::format("data=0x{:08X}", data));
++}
++
++void Shutdown() {
++  auto* s = state();
++  std::lock_guard<std::timed_mutex> guard(s->lock);
++  if (s->dropped) {
++    XELOGW("NUI_TRACE: {} lines dropped (lock contention)", s->dropped);
++  }
++  if (s->file) {
++    XELOGI("NUI_TRACE_END lines={}", s->seq);
++    fclose(s->file);
++    s->file = nullptr;
++  }
++  s->initialized = false;
++}
++
++}  // namespace nui_trace
++}  // namespace kernel
++}  // namespace xe
+\ No newline at end of file
+diff --git a/src/xenia/kernel/nui_trace.h b/src/xenia/kernel/nui_trace.h
+new file mode 100644
+index 000000000..3fc796976
+--- /dev/null
++++ b/src/xenia/kernel/nui_trace.h
+@@ -0,0 +1,82 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2025 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++// PHASE 0 SPIKE INSTRUMENTATION - throwaway, apply as:
++//   git apply tools/nui-spike/0001-nui-trace-instrumentation.patch
++//   ... run the dashboard / a NUI title with "Kinect Initialized" ticked ...
++//   git apply -R tools/nui-spike/0001-nui-trace-instrumentation.patch
++//
++// Goal: capture exactly which NUI surface a title touches, with arguments and
++// results, so the out-of-tree Kinect plugin can be specified against real data
++// instead of guesses. Writes a TSV trace next to the emulator storage root and
++// mirrors it into the normal log.
++//
++// cvars:
++//   log_nui_trace        bitmask: 1 exports, 2 messages, 4 notify,
++//                             8 message buffer hexdump, 16 trace *all* exports
++//                             (otherwise only NUI/natal/controlpack/nui-ish ones)
++//   nui_trace_filter     comma separated substrings, overrides the default
++//                             NUI-ish export name filter
++
++#ifndef XENIA_KERNEL_NUI_TRACE_H_
++#define XENIA_KERNEL_NUI_TRACE_H_
++
++#include <cstdint>
++
++#include "xenia/base/cvar.h"
++
++// DEFINE_/DECLARE_ macros open a `namespace cvars {}` at the current scope, so the
++// declarations must live at file scope to match the DEFINE_ in nui_trace.cc.
++DECLARE_int32(log_nui_trace);
++DECLARE_string(nui_trace_filter);
++
++namespace xe {
++namespace kernel {
++
++class KernelState;
++
++namespace nui_trace {
++
++// Trace bit flags (see log_nui_trace).
++enum : int32_t {
++  kTraceExports = 0x1,
++  kTraceMessages = 0x2,
++  kTraceNotify = 0x4,
++  kTraceHexdump = 0x8,
++  kTraceAllExports = 0x10,
++};
++
++// Truncates the trace file and records boot state (xconfig retail flags,
++// title id). Safe to call more than once.
++void Init(KernelState* kernel_state);
++
++// True if the export should be traced given its name (applies the filter).
++bool WantsExport(const char* name);
++
++// Call/return hooks, called from the generated export trampolines.
++// `regs` is PPCContext::r, we only read r3-r10 (xam/xboxkrnl call args).
++void ExportCall(const char* name, uint16_t ordinal, uint32_t thread_id,
++                const uint64_t* regs);
++void ExportRet(const char* name, uint16_t ordinal, uint32_t thread_id,
++               uint64_t result);
++
++// Hook for messages delivered to the xam app (0x2Bxxx / 0x2Cxxx ranges).
++void Message(const char* source, uint32_t app_id, uint32_t message,
++             uint32_t buffer_ptr, uint32_t buffer_length, KernelState* state);
++
++// Hook for XNotifyBroadcast and friends.
++void Notify(const char* name, uint32_t notification, uint32_t data);
++
++void Shutdown();
++
++}  // namespace nui_trace
++}  // namespace kernel
++}  // namespace xe
++
++#endif  // XENIA_KERNEL_NUI_TRACE_H_
+\ No newline at end of file
+diff --git a/src/xenia/kernel/util/shim_utils.h b/src/xenia/kernel/util/shim_utils.h
+index 4a243539f..1e42805c5 100644
+--- a/src/xenia/kernel/util/shim_utils.h
++++ b/src/xenia/kernel/util/shim_utils.h
+@@ -22,6 +22,8 @@
+ #include "xenia/cpu/ppc/ppc_context.h"
+ #include "xenia/kernel/kernel_flags.h"
+ #include "xenia/kernel/kernel_state.h"
++// PHASE 0 SPIKE INSTRUMENTATION (see tools/nui-spike/) - remove with the spike patch.
++#include "xenia/kernel/nui_trace.h"
+ 
+ namespace xe {
+ namespace kernel {
+@@ -553,6 +555,11 @@ struct ExportRegistrerHelper {
+         // The make_tuple order is undefined per the C++ standard and
+         // cause inconsitencies between msvc and clang.
+         std::tuple<Ps...> params = {Ps(init)...};
++        // PHASE 0 SPIKE INSTRUMENTATION - no-op unless -log_nui_trace is set.
++        xe::kernel::nui_trace::ExportCall(export_entry->name,
++                                          export_entry->ordinal,
++                                          ppc_context->thread_id,
++                                          ppc_context->r);
+         if (TAGS & xe::cpu::ExportTag::kLog &&
+             (!(TAGS & xe::cpu::ExportTag::kHighFrequency) ||
+              cvars::log_high_frequency_kernel_calls)) {
+@@ -572,6 +579,11 @@ struct ExportRegistrerHelper {
+               KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
+                                std::make_index_sequence<sizeof...(Ps)>());
+           result.Store(ppc_context);
++          // PHASE 0 SPIKE INSTRUMENTATION - capture r3 after the call.
++          xe::kernel::nui_trace::ExportRet(export_entry->name,
++                                            export_entry->ordinal,
++                                            ppc_context->thread_id,
++                                            ppc_context->r[3]);
+           if (TAGS &
+               (xe::cpu::ExportTag::kLog | xe::cpu::ExportTag::kLogResult)) {
+             // TODO(benvanik): log result.
+diff --git a/src/xenia/kernel/xam/apps/xam_app.cc b/src/xenia/kernel/xam/apps/xam_app.cc
+index 3c744e35d..a234f1e02 100644
+--- a/src/xenia/kernel/xam/apps/xam_app.cc
++++ b/src/xenia/kernel/xam/apps/xam_app.cc
+@@ -11,6 +11,8 @@
+ 
+ #include "xenia/base/logging.h"
+ #include "xenia/kernel/kernel_state.h"
++// PHASE 0 SPIKE INSTRUMENTATION (see tools/nui-spike/) - remove with the spike patch.
++#include "xenia/kernel/nui_trace.h"
+ #include "xenia/kernel/xam/xam_content_device.h"
+ #include "xenia/kernel/xenumerator.h"
+ 
+@@ -28,12 +30,21 @@ namespace kernel {
+ namespace xam {
+ namespace apps {
+ 
+-XamApp::XamApp(KernelState* kernel_state) : App(kernel_state, 0xFE) {}
++XamApp::XamApp(KernelState* kernel_state) : App(kernel_state, 0xFE) {
++  // PHASE 0 SPIKE INSTRUMENTATION - records boot state (xconfig retail flags,
++  // i.e. whether "Kinect Initialized" is ticked) once tracing is enabled.
++  xe::kernel::nui_trace::Init(kernel_state);
++}
+ 
+ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+                                       uint32_t buffer_length) {
+   // NOTE: buffer_length may be zero or valid.
+   auto buffer = memory_->TranslateVirtual(buffer_ptr);
++  // PHASE 0 SPIKE INSTRUMENTATION - capture the Kinect message ranges
++  // (0x2Bxxx camera / 0x2Cxxx identity) before any of them are consumed, plus
++  // everything else the xam app sees when tracing all messages.
++  xe::kernel::nui_trace::Message("XamApp", app_id(), message, buffer_ptr,
++                                 buffer_length, kernel_state_);
+   switch (message) {
+     case 0x0002000E: {
+       X_ENUMERATE_PARAM* data_ptr =
+diff --git a/src/xenia/kernel/xam/xam_notify.cc b/src/xenia/kernel/xam/xam_notify.cc
+index 349379b4b..2b559dbe1 100644
+--- a/src/xenia/kernel/xam/xam_notify.cc
++++ b/src/xenia/kernel/xam/xam_notify.cc
+@@ -107,6 +107,8 @@ void XNotifyPositionUI_entry(dword_t position) {
+ DECLARE_XAM_EXPORT1(XNotifyPositionUI, kNone, kStub);
+ 
+ dword_result_t XNotifyBroadcast_entry(dword_t notification, dword_t data) {
++  // PHASE 0 SPIKE INSTRUMENTATION (see tools/nui-spike/).
++  xe::kernel::nui_trace::Notify("XNotifyBroadcast", notification, data);
+   kernel_state()->BroadcastNotification(notification, data);
+ 
+   return X_ERROR_SUCCESS;

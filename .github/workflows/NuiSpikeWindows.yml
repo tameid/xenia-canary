@@ -1,0 +1,165 @@
+# PHASE 0 SPIKE - build the instrumented emulator on Windows and upload it.
+#
+# The Linux build is too unstable to iterate on for this work (the guest crashes
+# under X11/Wayland while loading content, upstream too), so this produces a
+# Windows binary with the NUI instrumentation applied.
+#
+# The emulator tree itself stays clean: the workflow applies the throwaway
+# patches from tools/nui-spike/ before building and commits nothing.
+#
+# Usage:
+#   GitHub Actions -> "NUI Spike (Windows)" -> Run workflow
+# or push to the `nui-spike` branch.
+#
+# The artifact (xenia_canary_nui.7z) expires after 14 days.
+name: NUI Spike (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_trace:
+        description: 'Apply the NUI trace instrumentation (0001)'
+        type: boolean
+        default: true
+      apply_nui_stubs:
+        description: 'Apply the PsCam/Mca/Detroit device-request stubs (0002)'
+        type: boolean
+        default: true
+  push:
+    branches:
+      - nui-spike
+    paths:
+      - 'tools/nui-spike/**'
+      - '.github/workflows/NuiSpikeWindows.yml'
+
+jobs:
+  build:
+    name: Build instrumented xenia_canary.exe
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+
+    env:
+      POWERSHELL_TELEMETRY_OPTOUT: 1
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Apply the NUI spike patches
+        shell: pwsh
+        env:
+          APPLY_TRACE: ${{ inputs.apply_trace }}
+          APPLY_NUI_STUBS: ${{ inputs.apply_nui_stubs }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # On a push-triggered run the dispatch inputs are unset; default both
+          # to true so a pushed branch still gets instrumented.
+          $trace = if ($env:APPLY_TRACE -eq '') { 'true' } else { $env:APPLY_TRACE }
+          $stubs = if ($env:APPLY_NUI_STUBS -eq '') { 'true' } else { $env:APPLY_NUI_STUBS }
+          if ($trace -eq 'true') {
+            Write-Host 'applying 0001-nui-trace-instrumentation.patch'
+            git apply --check tools/nui-spike/0001-nui-trace-instrumentation.patch
+            git apply tools/nui-spike/0001-nui-trace-instrumentation.patch
+          }
+          if ($stubs -eq 'true') {
+            Write-Host 'applying 0002-nui-device-request-stubs.patch'
+            git apply --check tools/nui-spike/0002-nui-device-request-stubs.patch
+            git apply tools/nui-spike/0002-nui-device-request-stubs.patch
+          }
+          git --no-pager diff --stat
+          Write-Host 'tree state:'
+          git status --short
+          "APPLIED_TRACE=$trace" >> $env:GITHUB_ENV
+          "APPLIED_STUBS=$stubs" >> $env:GITHUB_ENV
+
+      - name: Verify the patches landed
+        shell: pwsh
+        run: |
+          # Fail early and loudly if a patch silently did not apply: the build
+          # would otherwise succeed and hand back an uninstrumented binary.
+          if ($env:APPLIED_TRACE -eq 'true' -and -not (Test-Path 'src/xenia/kernel/nui_trace.cc')) {
+            Write-Error 'nui_trace.cc missing - the instrumentation was not applied'
+          }
+          if ($env:APPLIED_STUBS -eq 'true' -and -not (Test-Path 'src/xenia/kernel/xboxkrnl/xboxkrnl_nui.cc')) {
+            Write-Error 'xboxkrnl_nui.cc missing - the device-request stubs were not applied'
+          }
+          Write-Host "trace=$env:APPLIED_TRACE stubs=$env:APPLIED_STUBS"
+
+      - name: Cache Vulkan SDK
+        id: cache-vulkan-sdk
+        uses: actions/cache@v6
+        with:
+          path: C:\VulkanSDK
+          key: ${{ runner.os }}-vulkan-sdk-${{ hashFiles('**/vulkan-sdk.exe') }}
+          restore-keys: ${{ runner.os }}-vulkan-sdk-
+
+      - name: Install Vulkan SDK with spirv-tools
+        run: |-
+          if (Test-Path "C:\VulkanSDK") {
+            echo "Vulkan SDK found in cache."
+          } else {
+            Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe" -OutFile "vulkan-sdk.exe"
+            Start-Process -FilePath "vulkan-sdk.exe" -ArgumentList "--accept-licenses", "--default-answer", "--confirm-command", "install" -NoNewWindow -Wait
+          }
+          $env:VULKAN_SDK = "C:\VulkanSDK\$(Get-ChildItem -Path 'C:\VulkanSDK' -Directory | Select-Object -First 1 -ExpandProperty Name)"
+          $env:PATH += "${env:VULKAN_SDK}\Bin"
+          echo "VULKAN_SDK=$env:VULKAN_SDK" >> $env:GITHUB_ENV
+          echo "${env:VULKAN_SDK}\Bin" >> $env:GITHUB_PATH
+          foreach ($tool in @("glslangValidator", "spirv-opt", "spirv-dis")) {
+            if (Test-Path "${env:VULKAN_SDK}\Bin\${tool}.exe") { echo "found $tool" }
+            else { Write-Error "$tool.exe missing" }
+          }
+
+      - name: Download submodules
+        run: |-
+          $SUBMODULES=(Select-String -CaseSensitive '(?<=path = )(?!third_party\/xbyak_aarch64).+' .gitmodules).Matches.Value
+          git submodule update --init --depth=1 -j $env:NUMBER_OF_PROCESSORS $SUBMODULES
+
+      - name: Build Xenia
+        run: python xenia-build.py build --config=Release --target=xenia-app
+
+      - name: Package
+        id: package
+        run: |-
+          $ErrorActionPreference = 'Stop'
+          $exe = "build\bin\Windows\Release\xenia_canary.exe"
+          if (-not (Test-Path $exe)) { Write-Error "no $exe"; exit 1 }
+          if ((Get-Item $exe).Length -le 100000) { Write-Error "exe suspiciously small"; exit 1 }
+          $path = "xenia_canary_nui.7z"
+          # Ship the analysis tooling too, so a spike run needs nothing else.
+          7z a $path $exe LICENSE `
+              .\tools\nui-spike\analyze.py `
+              .\tools\nui-spike\gen_surface.py `
+              .\tools\nui-spike\set-kinect-flag.py `
+              .\tools\nui-spike\nui_surface.csv `
+              .\tools\nui-spike\README.md `
+              -mx9 -bb3
+          if ((Get-Item $path).Length -le 100000) { Write-Error "archive too small"; exit 1 }
+          "path=$path" >> $env:GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: xenia_canary_nui
+          path: ${{ steps.package.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
+          archive: false
+
+      - name: Summary
+        if: always()
+        run: |-
+          Add-Content $env:GITHUB_STEP_SUMMARY @"
+          ### NUI spike build
+          Apply the patches in this archive's parent repo, then:
+          ```
+          xenia_canary.exe --log_nui_trace 0x0F -storage_root .\spike <title>
+          ```
+          The trace lands in `.\spike\nui_trace\trace.tsv`.
+          Summarise it with:
+          ```
+          python tools\nui-spike\analyze.py .\spike\nui_trace\trace.tsv
+          ```
+          "@

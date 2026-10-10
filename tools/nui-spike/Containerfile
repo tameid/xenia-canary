@@ -1,0 +1,62 @@
+# NUI spike build environment for xenia-canary (Linux, compile-check only).
+#
+# Purpose: compile-verify the Phase 0 instrumentation patch. It does NOT provide a
+# Vulkan SDK, so shader compilation and final linking are out of scope - use it to
+# build individual object files / static libs, not a runnable xenia-canary.
+#
+# Build:  podman build -t xenia-nui-spike:clang19 -f Containerfile .
+# Shell:  podman run --rm -it -v $PWD:/src:Z -w /src xenia-nui-spike:clang19
+# Remove: podman rmi xenia-nui-spike:clang19
+FROM docker.io/library/debian:trixie-slim
+
+# Versions required by docs/building.md: "Clang 19 or newer".
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        cmake \
+        git \
+        lld-19 \
+        libc++-19-dev \
+        libc++abi-19-dev \
+        clang-19 \
+        glslang-tools \
+        spirv-tools \
+        make \
+        ninja-build \
+        pkg-config \
+        python3 \
+        rsync \
+        zlib1g-dev \
+        libgtk-3-dev \
+        liblz4-dev \
+        libsdl2-dev \
+        libvulkan-dev \
+        libx11-xcb-dev \
+        libxcb1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# tools/build/compile_shader_spirv.py calls:
+#   spirv-opt -O -O --canonicalize-ids in.spv -o out.spv
+# Debian's SPIRV-Tools (2025.1) removed --canonicalize-ids (ids are canonicalised
+# by default now), so filter it out. Only affects ID numbering in the embedded
+# bytecode, not behaviour - but this image is for a *test* binary. Use the
+# official LunarG Vulkan SDK when you want a build you trust.
+RUN printf '%s\n' \
+      '#!/bin/bash' \
+      'filtered=()' \
+      'for a in "$@"; do' \
+      '  [ "$a" = "--canonicalize-ids" ] && continue' \
+      '  filtered+=("$a")' \
+      'done' \
+      'exec /usr/bin/spirv-opt.real "${filtered[@]}"' \
+      > /usr/local/bin/spirv-opt \
+    && chmod +x /usr/local/bin/spirv-opt \
+    && mv /usr/bin/spirv-opt /usr/bin/spirv-opt.real \
+    && cp /usr/local/bin/spirv-opt /usr/bin/spirv-opt \
+    && chmod +x /usr/bin/spirv-opt
+
+ENV CC=clang-19 \
+    CXX=clang++-19 \
+    LLVM_ROOT=/usr/lib/llvm-19 \
+    PATH=/usr/lib/llvm-19/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+WORKDIR /src
