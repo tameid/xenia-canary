@@ -4,6 +4,10 @@
 **Constraint:** keep the fork as close to upstream `xenia-canary` as possible. Everything
 that can live outside the emulator tree *does*.
 
+**Running the spike:** see [`kinect_spike_runbook.md`](kinect_spike_runbook.md) for the
+Windows host procedure, and [`tools/nui-spike/README.md`](../tools/nui-spike/README.md)
+for the tooling, podman build environment and Linux/Proton path.
+
 ---
 
 ## 0. Summary

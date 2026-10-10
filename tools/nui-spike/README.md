@@ -284,7 +284,46 @@ behaviour needed. NUIView's entire NUI surface is five functions:
 The other 30 unimplemented imports are `NetDll_XHttp*`, `Io*`/`Ob*`, `LDI*`,
 `RtlUnwind`, `Stfs*`, `XeKeysConsoleSignatureVerification` — not Kinect-related.
 
-## 8. Getting a Windows binary
+## 8. Running the Windows build on Linux (Proton, no Steam)
+
+Steam's Proton sandbox confines a non-Steam shortcut to Steam's own directories, so
+xenia launched that way can only touch what it created itself — it cannot reach your
+content. Invoking the same Proton build directly skips the sandbox and maps `Z:` to `/`:
+
+```sh
+./tools/nui-spike/run-nuiview-proton.sh                       # NUIView
+./tools/nui-spike/run-nuiview-proton.sh --fake-device         # device reports present
+./tools/nui-spike/run-nuiview-proton.sh --title test         # hand-made 4 KB homebrew
+./tools/nui-spike/run-nuiview-proton.sh --trace-mask 0x1F    # trace every export
+```
+
+Under the hood:
+
+```sh
+STEAM_COMPAT_CLIENT_INSTALL_PATH=~/.var/app/com.valvesoftware.Steam/.local/share/Steam \
+STEAM_COMPAT_DATA_PATH=/tmp/pdata \
+  ".../Proton 9.0 (Beta)/proton" run ./xenia_canary.exe \
+    --enable_console --log_level 3 --log_nui_trace 0x0F \
+    --storage_root 'Z:\home\...\winstore' 'Z:\...\title.xex'
+```
+
+Notes learned the hard way:
+
+* `STEAM_COMPAT_DATA_PATH` must already exist or Proton dies with
+  `FileNotFoundError: .../pfx.lock` before running anything.
+* **Every flag needs `--`.** A single-dash flag makes cxxopts throw, and xenia then
+  shows a message box and `exit(0)`s (`cvar.cc:94-103`) — the emulator silently never
+  starts, with exit code 0. That is also why a rejected `-storage_root` leaves junk
+  (`.xdp-*`, `xenia.log`) in the exe's directory: it fell back to the cwd as storage root.
+* The artifact arrives without the exec bit; `chmod +x` it.
+* `--enable_console` calls `AllocConsole()` unconditionally (`console_win.cc:38-48`), so
+  you get a console window. In a non-tty shell you see nothing — use `--log_file`, which
+  writes continuously and survives a crash.
+* The default trace filter (`Nui`, `Natal`, `Kinect`, `ControlPack`, `Biometric`) does
+  **not** match `PsCamDeviceRequest`, which is the interesting call. Use `--trace-mask 0x1F`
+  to see everything, or pass `--nui_trace_filter PsCam,Mca,Detroit`.
+
+## 9. Getting a Windows binary
 
 The Linux build is too flaky to iterate on (see above). `.github/workflows/NuiSpikeWindows.yml`
 builds the instrumented `xenia_canary.exe` on a GitHub runner:
