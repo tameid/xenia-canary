@@ -1,8 +1,15 @@
 # Kinect (NUI) support — design plan
 
-**Status:** design / pre-implementation
+**Status:** Phase 0 spike **complete**; design otherwise unchanged
 **Constraint:** keep the fork as close to upstream `xenia-canary` as possible. Everything
 that can live outside the emulator tree *does*.
+
+> **Headline result (runbook §8):** the dashboard's NUI init is gated on
+> `XamNuiIsDeviceReady`, a **host-side** export that always returns 0 because of a bug at
+> `xam_nui.cc:199`. Guest patches and guest plugins cannot influence it. So the "zero
+> upstream diff" property below holds for the *hardware pipeline* but **not** for
+> dashboard enablement, which needs a one-line in-tree fix. Much smaller than the §8
+> fallback originally budgeted, but real — and measured rather than assumed.
 
 **Running the spike:** see [`kinect_spike_runbook.md`](kinect_spike_runbook.md) for the
 Windows host procedure, and [`tools/nui-spike/README.md`](../tools/nui-spike/README.md)
@@ -68,7 +75,7 @@ These findings are what make the out-of-tree approach viable.
 | ImGui overlay available for debugging | `src/xenia/ui/imgui_drawer.h:43,65,93` |
 | Unit-test scaffolding (Catch2) | `src/xenia/base/testing/*_test.cc` (`xe_test_suite`) |
 
-### Known gap found during review
+### Known gap found during review — now measured, and it is the blocker
 
 `XamNuiIsDeviceReady` (`xam_nui.cc:185-201`) computes `kinect_initialized >> 1 & 1`, which is
 `0` for `0x20000000` — i.e. it always reports *not ready*, even with the checkbox on.
@@ -77,6 +84,14 @@ That makes `XamNuiHudIsEnabled` (`:272-285`) false and `XamNuiIdentityEnrollForS
 
 * "Kinect present" is already obtainable with zero code, but
 * "Kinect ready / identity" is not, and must be handled by patch, plugin, or the fallback PR (§8).
+
+**Phase 0 confirmed this is the hard gate.** With the Kinect flag set *and*
+`--nui_fake_device` set — so that `XamNuiGetDeviceStatus` returns `0` and
+`XUsbcamGetState` returns `0x3` — the dashboard still spins indefinitely on
+`XamNuiIsDeviceReady`, which returned `0` on all 1096 calls. Note `kinect_initialized` is
+a `bool`, so `>> 1` is meaningless in the first place: **no retail-flag value makes this
+return ready.** Since it is a host export, no guest-side patch or plugin can change it.
+This is what forces the one-line §8 fix.
 
 ### Second gap: 91 of 129 NUI ordinals have no shim at all
 
@@ -361,6 +376,20 @@ surface table from `gen_surface.py`, which is already written up in §1.
 **Exit criteria:** plugin loads and delivers a message to xam; a title is observed calling
 the NUI surface with "Kinect Initialized" set; surface list written down.
 
+**Outcome (measured on Windows against the NXE Kinect flash — see runbook §7–§8):**
+
+* ✅ A title *was* observed calling the NUI surface with the flag set. Surface list
+  written down: the dashboard's entire NUI surface is five exports —
+  `XamNuiGetDeviceStatus`, `XamNuiHudSetEngagedTrackingID`, `XamIsNuiAutomationEnabled`,
+  `XamNuiIsDeviceReady`, `XUsbcamGetState`.
+* ✅ The gate chain is fully resolved and ordered: Kinect flag → `XamNuiGetDeviceStatus`
+  ✅; `--nui_fake_device` → `XUsbcamGetState` ✅; `XamNuiIsDeviceReady` ❌ **always 0**.
+* ❌ **Plugin loading was never tested** — it needs a real title hash and a 360 homebrew
+  toolchain, and the dashboard never got far enough to be worth it.
+* ➡️ The blocker is host-side, so the L2 plugin story is untested but also not currently
+  on the critical path. Fix `XamNuiIsDeviceReady` first, re-measure, and only then decide
+  whether a homebrew plugin is needed at all.
+
 Revert when done:
 
 ```sh
@@ -373,8 +402,9 @@ git apply -R tools/nui-spike/0001-nui-trace-instrumentation.patch
 
 | Phase | Deliverable | Depends on |
 |---|---|---|
-| 0 | Spike + surface spec (§6) | — |
-| 1 | `nui-provider` with `synthetic` + `replay` backends; IPC writer; frame format frozen; Catch2 tests for codec/smoother/mapper | 0 |
+| 0 | Spike + surface spec (§6) — **done**; gate chain resolved, §8 fix identified | — |
+| 0.5 | **Fix `XamNuiIsDeviceReady` (§8 row 2) and re-measure.** Nothing downstream is reachable until this lands | 0 |
+| 1 | `nui-provider` with `synthetic` + `replay` backends; IPC writer; frame format frozen; Catch2 tests for codec/smoother/mapper | 0.5 |
 | 2 | Hello-world plugin → frame-consuming plugin; `XNotifyBroadcast` handshake; skeleton ring buffer | 1 |
 | 3 | Per-title patches: skip connection checks, redirect NUI calls | 2 |
 | 4 | `webcam` backend + pose core (first *usable* end-to-end setup) | 3 |
@@ -398,9 +428,16 @@ default-off PR — no cvars renumbered, no behaviour changes when disabled:
 | Broadcast `kXNotificationSystemNUIHardwareStatusChanged` on device state change | ~20 lines | matches the contract documented at `xbox.h:194-196` |
 
 All four are additive, behind one `DEFINE_string(nui_frame_source, "none", ...)`-style cvar
-in a new `src/xenia/kernel/xam/nui/` directory. Default `none` ⇒ zero behaviour change and a
-near-zero merge burden against upstream. This is the *only* place in this plan where fork
+in a new `src/xenia/kernel/xam/nui/` directory. Default `none` ⇒ zero behaviour change and
+a near-zero merge burden against upstream. This is the *only* place in this plan where fork
 divergence is proposed.
+
+**Phase 0 outcome — row 2 is no longer conditional.** The `XamNuiIsDeviceReady` fix is now
+*measured* to be required, and the other three remain plausible-but-unproven. So start with
+row 2 on its own: it is roughly one line, it has no cvar, and it is an unambiguous upstream
+bug (`return kinect_initialized >> 1 & 1;` on a `bool`). Land and re-measure before
+building any of the rest; the surface after that gate is still unknown, and it may turn out
+that a title which only probes the device — like the dashboard — needs nothing more.
 
 ---
 

@@ -86,6 +86,14 @@ parsed as short options, giving `Option 's' does not exist` and the usage banner
 probably want — use `0xF` for the NUI-only view. Narrow further with
 `--nui_trace_filter XamNuiSkeleton,XamNuiPlayerEngagement`.
 
+> **Always pass `--nui_trace_filter` explicitly.** Builds from before the
+> `FilterSubstrings()` cache fix silently traced **nothing** at `0xF` with the default
+> filter: `nui_trace_filter` defaults to `""`, which compared equal to the
+> default-constructed cache key, so the default filter list was never populated and no
+> name ever matched. Only `0x1F` worked, because bit `0x10` bypasses the filter — which
+> is why the bug went unnoticed. Symptom: a `trace.tsv` with only the two `STATE` rows.
+> See the runbook §9.
+
 The cvar is persisted: xenia writes `log_nui_trace = 0` into
 `xenia-canary.config.toml` on exit, so pass the flag on every run.
 
@@ -286,6 +294,15 @@ The flag works (`XamNuiGetDeviceStatus` stops retrying) but the dashboard still 
 `XUsbcamGetState` forever and reaches no further NUI export. **`XUsbcamGetState` is a
 second, independent gate**, so the Kinect flag and `--nui_fake_device` are both required
 to get anywhere. See the runbook for the full write-up.
+
+### The fake device is not the last gate either
+
+Adding `--nui_fake_device` to the above does satisfy `XUsbcamGetState` (it returns
+`0x00000003`), and `XamNuiGetDeviceStatus` returns `0x00000000`. The dashboard then waits
+on **`XamNuiIsDeviceReady`, which returns `0x00000000` every single time** and cannot
+return otherwise — `xam_nui.cc:199` does `return kinect_initialized >> 1 & 1;` on a
+`bool`. That gate is host-side, so it is the point where guest patches and plugins run
+out of road and the in-tree fix becomes unavoidable. Runbook §8 has the full trace.
 
 ### You do not need a live run to get the surface list
 

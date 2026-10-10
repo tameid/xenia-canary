@@ -240,35 +240,96 @@ Also worth recording: the dashboard is not "black-screening" on Windows, it is
 *busy-waiting*. The symptom to expect while it is blocked is pegged CPU and a
 `XUsbcamGetState` loop in the log, not a hang.
 
-## 8. The open question, and how to answer it
+## 8. The open question — answered
 
-With `--nui_fake_device`, `PsCam`/`Mca` report success, `Detroit` reports a tilt controller
-and `XUsbcamGetState` reports a connected camera. What the dashboard does *next* is the
-measurement that matters — the exports after `XUsbcamGetState` are the surface the
-Kinect provider must eventually satisfy.
+**The dashboard cannot get past `XamNuiIsDeviceReady`, and no amount of guest-side work
+can fix it.**
 
-Two runs to make it deterministic:
+With the Kinect flag on **and** `--nui_fake_device` on, every gate resolves except the
+last one:
 
-1. ~~**baseline** — Kinect flag set, *no* `--nui_fake_device`, mask `0x1F`. Expect it to
-   stop at `XUsbcamGetState`.~~ **Done** (see "Measured on Windows" above): it never
-   gets past `XUsbcamGetState` and spins there indefinitely.
-2. **fake device** — same plus `--nui_fake_device`. Diff the traces: every new call is
-   part of the "Kinect present" path. **This is the one still outstanding**, and it
-   *requires* the instrumented build, because `nui_fake_device` only exists once patch
-   0002 is applied.
+| gate | call | result |
+|---|---|---|
+| Kinect flag | `XamNuiGetDeviceStatus` | `0x00000000` — success |
+| `--nui_fake_device` | `XUsbcamGetState` | `0x00000003` — initialised + connected |
+| — | **`XamNuiIsDeviceReady`** | **`0x00000000` — never ready** |
 
-So the remaining measurement needs `.github/workflows/NuiSpikeWindows.yml` to be
-dispatched and the artifact downloaded. Everything else for it is already in place: both
-patches apply cleanly to this branch, and the Kinect flash content is on disk.
+Patch 0002 works exactly as intended: `XUsbcamGetState` really does report a connected
+camera, and `XamNuiGetDeviceStatus` really does succeed. The dashboard notices, and then
+waits forever on `XamNuiIsDeviceReady`, which never returns non-zero:
 
-On Linux-under-Proton the faked run exited early rather than continuing; a real Windows
-host is the cleaner environment for this.
+```cpp
+// src/xenia/kernel/xam/xam_nui.cc:194-200
+const bool kinect_initialized = /* retail_flags & KinectInitialized */;
+return kinect_initialized >> 1 & 1;   // 1 >> 1 & 1 == 0, always
+```
 
-Please attach, for whichever run fails:
+`kinect_initialized` is a **`bool`**, so the shift is meaningless — it is either 0 or 1,
+and `1 >> 1` is 0. There is no flag value that makes this return ready. The counts show
+the guest waiting on precisely this: `XUsbcamGetState` ×3284 and `XamNuiIsDeviceReady`
+×1096 against a flat five-export surface.
 
-- `xenia.log` (the tail is enough, but the whole file is fine)
-- `trace.tsv`
-- the exact command line
+### What this means for the plan
 
-That is the last input needed to turn [`kinect_support.md`](kinect_support.md) into an
-implementation spec — specifically the provider's output contract and the plugin's job.
+This is the §8 fallback PR in [`kinect_support.md`](kinect_support.md), now **measured
+rather than predicted**. The question was whether the L1/L2/L3 out-of-tree stack could
+deliver Kinect with zero fork divergence. For the dashboard it cannot: the blocking gate
+is a host-side export returning a value guest code has no way to influence. L1 patches
+only write guest memory and L2 plugins run *as* guest code — neither can change what
+`xam.xex`'s own export returns to its caller.
+
+The minimum viable fork change is therefore **one line** in `xam_nui.cc`, replacing the
+bogus shift with the device state the comment above it already describes
+(`kXNotificationSystemNUIHardwareStatusChanged`, known values `0x0001`/`0x0004`/`0x0040`).
+That is a far better position than the ~300-line `NuiFrame` ingestion row in §8: additive,
+no behaviour change when no NUI source is configured, and defensible as an upstream bug
+fix — which the shift plainly is.
+
+The other §8 rows (skeleton ingestion, identity stubs, hardware-status notify) are still
+needed for titles that consume skeletons rather than merely probe the device, but they
+are no longer the *first* thing in the path.
+
+### Reproducing
+
+Both patches, Kinect flag on, and an **explicit** filter — see the tracer bug in §9:
+
+```bat
+xenia_canary.exe --enable_console --log_level 3 ^
+  --log_nui_trace 0x0F --nui_fake_device ^
+  --nui_trace_filter "Nui,Usbcam,UsbCam,Natal,Kinect,ControlPack,Biometric,PsCam,Mca,Detroit" ^
+  --log_file <store>\run.log --storage_root <store> ^
+  "<store>\NXE Kinect\$flash_dash.xex"
+```
+
+## 9. Tracer bug: the default `nui_trace_filter` matched nothing
+
+Found while doing the above. **With `--log_nui_trace 0x0F` and no explicit filter the
+tracer records zero exports** — `trace.tsv` holds only the two `STATE` boot rows.
+
+Cause, in `nui_trace.cc`'s `FilterSubstrings()`:
+
+```cpp
+static std::string cached_source;    // default-constructed == ""
+static std::vector<std::string> cached;
+const std::string& configured = cvars::nui_trace_filter;  // default-constructed == ""
+if (configured == cached_source) {   // TRUE on the very first call
+  return cached;                     // returns the still-empty vector
+}
+```
+
+`nui_trace_filter` defaults to `""`, and so does `cached_source`, so the cache
+short-circuits *before* the `if (configured.empty())` branch that populates
+`kDefaultFilter`. The default filter was unreachable; only an explicitly non-empty filter
+ever worked. `--log_nui_trace 0x1F` masked the bug, because bit `0x10` returns from
+`WantsExport` before the filter is consulted — which is why earlier runs appeared to work:
+they all used `0x1F`.
+
+| mask | filter | trace rows |
+|---|---|---|
+| `0x0F` | default (`""`) | 2 |
+| `0x0F` | explicit | 10,983 |
+| `0x1F` | default | 607,605 (76 MB) |
+
+Fixed in `0001-nui-trace-instrumentation.patch` with a `cached_valid` flag. Until you
+rebuild, pass an explicit `--nui_trace_filter` — that works against the already-built
+binary and is how the numbers above were obtained.

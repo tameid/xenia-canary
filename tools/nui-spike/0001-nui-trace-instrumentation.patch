@@ -82,13 +82,22 @@ index 000000000..024efeab9
 +std::vector<std::string> FilterSubstrings() {
 +  // Cached: WantsExport() runs on every traced export call, and the "trace all
 +  // exports" mode makes that hot.
++  //
++  // cached_valid is required: nui_trace_filter defaults to "", and a
++  // default-constructed cached_source is also "". Comparing the two without a
++  // validity flag short-circuits on the very first call and returns the still
++  // empty vector, so the default filter below was never applied and NO export
++  // was ever traced unless log_nui_trace had bit 0x10 set (which bypasses the
++  // filter entirely) or the user passed an explicit non-empty filter.
 +  static std::string cached_source;
 +  static std::vector<std::string> cached;
++  static bool cached_valid = false;
 +  const std::string& configured = cvars::nui_trace_filter;
-+  if (configured == cached_source) {
++  if (cached_valid && configured == cached_source) {
 +    return cached;
 +  }
 +  cached_source = configured;
++  cached_valid = true;
 +  cached.clear();
 +  if (configured.empty()) {
 +    for (auto* s : kDefaultFilter) {
