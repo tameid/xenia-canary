@@ -266,6 +266,27 @@ Each of these cost a build/run cycle or a source dive, so they are recorded here
 | **NUIView imports 35 unimplemented functions**, three of them NUI-critical and fatal (`PsCamDeviceRequest` 0x30D, `McaDeviceRequest` 0x30E, `DetroitDeviceRequest` 0x30F): in `xboxkrnl_table.inc` with no implementation, so the guest got a null import and an `undefined extern call`. Fixed by `0002-nui-device-request-stubs.patch`, which adds them plus an `--nui_fake_device` knob to report the device as present. | `xboxkrnl_table.inc:795-797` |
 | With the stubs in place and the Kinect flag set, NUIView runs to timeout without crashing and calls **no** `XamNui*` export — it concludes there is no camera from the `PsCam`/`Mca` replies. `--nui_fake_device` flips those replies to "present" so the app walks its NUI init path; that measurement is the one still outstanding. | — |
 
+### You do not need the instrumented build for the device-status A/B
+
+`--log_level 3` already logs every export the guest calls (`d> ... Name(...)`). That is
+enough to measure *which* NUI exports a title touches and how often, with a completely
+stock binary. Patch 0001 buys you structured TSV, xam *messages*, notify calls and
+message hexdumps — not the export call stream itself. Use a stock build for surface
+enumeration and save the instrumented artifact for when you need the message traffic.
+
+Measured against the NXE Kinect flash on Windows, stock binary, `$flash_dash.xex`:
+
+| call | Kinect flag off | Kinect flag on |
+|---|---|---|
+| `XamNuiGetDeviceStatus` | 7 | 3 |
+| `XamNuiIsDeviceReady` | 794 | 1324+ |
+| `XUsbcamGetState` | 2499 | 3622+ |
+
+The flag works (`XamNuiGetDeviceStatus` stops retrying) but the dashboard still spins on
+`XUsbcamGetState` forever and reaches no further NUI export. **`XUsbcamGetState` is a
+second, independent gate**, so the Kinect flag and `--nui_fake_device` are both required
+to get anywhere. See the runbook for the full write-up.
+
 ### You do not need a live run to get the surface list
 
 xenia already dumps a module's import table, marking unimplemented exports with `!!`
@@ -361,7 +382,7 @@ can't quietly produce an uninstrumented binary.
 On Windows:
 
 ```
-xenia_canary.exe --log_nui_trace 0x0F -storage_root .\spike <title>
+xenia_canary.exe --log_nui_trace 0x0F --storage_root .\spike <title>
 python tools\nui-spike\analyze.py .\spike\nui_trace\trace.tsv
 ```
 

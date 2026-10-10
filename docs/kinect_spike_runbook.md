@@ -194,6 +194,52 @@ worth adding to the not-declared list if a title needs them.
 | Its whole NUI surface is 5 functions | `XamNuiIdentityGetSessionId` (implemented), `XamUserNuiGetUserIndex` (stub), and the three device requests. Get the list without running anything: xenia dumps a module's import table on load, marking unimplemented ones with `!!` (`user_module.cc:1199`). |
 | `XamNuiIsDeviceReady` is broken | Returns `kinect_initialized >> 1 & 1` = always 0 (`xam_nui.cc:185-201`). |
 
+### Measured on Windows: the Kinect flag alone is not enough
+
+Run on a real Windows host against the **NXE Kinect flash** (`$flash_dash.xex`, title
+`FFFE07D1`), stock `xenia_canary.exe`, `--log_level 3`. Note that `--log_level 3` already
+prints every export call (`d> ... Name(...)`), so this A/B needs **no instrumentation
+patch at all** — it is reproducible with any xenia build.
+
+```bat
+xenia_canary.exe --enable_console --log_level 3 ^
+  --log_file <store>\run.log --storage_root <store> ^
+  "<store>\NXE Kinect\$flash_dash.xex"
+```
+
+| call | Kinect flag **off** | Kinect flag **on** |
+|---|---|---|
+| `XamNuiGetDeviceStatus` | 7 | 3 |
+| `XamNuiHudSetEngagedTrackingID` | 2 | 2 |
+| `XamNuiIsDeviceReady` | 794 | 1324+ |
+| `XUsbcamGetState` | 2499 | 3622+ |
+
+(`+` = still climbing when the run was stopped.)
+
+Three things fall out of this:
+
+1. **The flag does what it claims.** `XamNuiGetDeviceStatus` drops from 7 calls to 3 —
+   it stops failing/retrying and succeeds immediately. The checkbox really is what flips
+   the guest's belief.
+2. **But the dashboard does not advance.** With the flag on it *still* spins on
+   `XUsbcamGetState` and `XamNuiIsDeviceReady`, and after ~2.5 minutes it had reached
+   **no further NUI export at all** — the full set ever called is those four names.
+   So the gate is not the Kinect flag.
+3. **The gate is `XUsbcamGetState`**, which hardcodes "not connected"
+   (`xboxkrnl_usbcam.cc:38-43`). That is exactly what patch 0002's `--nui_fake_device`
+   flips to `initialised + connected`. So the previous run's observation is confirmed
+   on Windows: **the Kinect flag and the fake camera are two separate gates, and you
+   need both.**
+
+Practical consequence: `--nui_fake_device` is not optional instrumentation for this
+title — without it there is nothing further to measure, because the guest never gets
+past the camera probe. That makes the instrumented CI artifact a hard prerequisite for
+the remaining half of §8.
+
+Also worth recording: the dashboard is not "black-screening" on Windows, it is
+*busy-waiting*. The symptom to expect while it is blocked is pegged CPU and a
+`XUsbcamGetState` loop in the log, not a hang.
+
 ## 8. The open question, and how to answer it
 
 With `--nui_fake_device`, `PsCam`/`Mca` report success, `Detroit` reports a tilt controller
@@ -203,10 +249,17 @@ Kinect provider must eventually satisfy.
 
 Two runs to make it deterministic:
 
-1. **baseline** — Kinect flag set, *no* `--nui_fake_device`, mask `0x1F`. Expect it to
-   stop at `XUsbcamGetState`.
+1. ~~**baseline** — Kinect flag set, *no* `--nui_fake_device`, mask `0x1F`. Expect it to
+   stop at `XUsbcamGetState`.~~ **Done** (see "Measured on Windows" above): it never
+   gets past `XUsbcamGetState` and spins there indefinitely.
 2. **fake device** — same plus `--nui_fake_device`. Diff the traces: every new call is
-   part of the "Kinect present" path.
+   part of the "Kinect present" path. **This is the one still outstanding**, and it
+   *requires* the instrumented build, because `nui_fake_device` only exists once patch
+   0002 is applied.
+
+So the remaining measurement needs `.github/workflows/NuiSpikeWindows.yml` to be
+dispatched and the artifact downloaded. Everything else for it is already in place: both
+patches apply cleanly to this branch, and the Kinect flash content is on disk.
 
 On Linux-under-Proton the faked run exited early rather than continuing; a real Windows
 host is the cleaner environment for this.

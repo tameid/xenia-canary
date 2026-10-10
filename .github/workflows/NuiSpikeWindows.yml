@@ -155,7 +155,7 @@ jobs:
           ### NUI spike build
           Apply the patches in this archive's parent repo, then:
           ```
-          xenia_canary.exe --log_nui_trace 0x0F -storage_root .\spike <title>
+          xenia_canary.exe --log_nui_trace 0x0F --storage_root .\spike <title>
           ```
           The trace lands in `.\spike\nui_trace\trace.tsv`.
           Summarise it with:
