@@ -7,12 +7,15 @@ design it feeds.
 - Test title: **NUIView**, the Xbox 360 Kinect developer test application
   (title `4D5308FB`, ~43 MB, NUI-only). It is the cheapest thing that exercises the NUI
   path; a retail NUI game is not needed yet.
-- Binary: built by `.github/workflows/NuiSpikeWindows.yml` on a GitHub runner, with two
+- Binary: built by `.github/workflows/NuiSpikeWindows.yml` on a GitHub runner, with three
   patches applied at build time:
   - `tools/nui-spike/0001-nui-trace-instrumentation.patch` — the tracer (throwaway)
   - `tools/nui-spike/0002-nui-device-request-stubs.patch` — `PsCam`/`Mca`/`Detroit`
     device requests and the `XUsbcamGetState` camera state, all behind the
     `--nui_fake_device` knob
+  - `tools/nui-spike/0003-nui-device-ready.patch` — fixes `XamNuiIsDeviceReady`, the
+    host-side gate described in §8. Requires 0002 (it reuses the `nui_fake_device`
+    cvar), so the two are applied together.
 
 ---
 
@@ -288,6 +291,24 @@ fix — which the shift plainly is.
 The other §8 rows (skeleton ingestion, identity stubs, hardware-status notify) are still
 needed for titles that consume skeletons rather than merely probe the device, but they
 are no longer the *first* thing in the path.
+
+### Patch 0003 — the fix, ready to apply
+
+`tools/nui-spike/0003-nui-device-ready.patch` implements the one-line change, on top of
+0002. It is off unless `nui_fake_device` is set, so behaviour is unchanged for anyone not
+running the spike:
+
+```cpp
+  if (!kinect_initialized || !cvars::nui_fake_device) {
+    return 0;
+  }
+  return 0x0001;
+```
+
+Re-measure with it applied and the dashboard should get past `XamNuiIsDeviceReady` for the
+first time. **What it reaches afterwards is unknown** — every prior run stopped at this
+gate, so the surface beyond it has never been observed. That is the next measurement, and
+it is the one that finally tells us whether an L2 plugin is needed at all.
 
 ### Reproducing
 

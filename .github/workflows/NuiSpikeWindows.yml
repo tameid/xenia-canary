@@ -25,6 +25,10 @@ on:
         description: 'Apply the PsCam/Mca/Detroit device-request stubs (0002)'
         type: boolean
         default: true
+      apply_device_ready:
+        description: 'Apply the XamNuiIsDeviceReady fix (0003)'
+        type: boolean
+        default: true
   push:
     branches:
       - nui-spike
@@ -52,12 +56,14 @@ jobs:
         env:
           APPLY_TRACE: ${{ inputs.apply_trace }}
           APPLY_NUI_STUBS: ${{ inputs.apply_nui_stubs }}
+          APPLY_DEVICE_READY: ${{ inputs.apply_device_ready }}
         run: |
           $ErrorActionPreference = 'Stop'
-          # On a push-triggered run the dispatch inputs are unset; default both
-          # to true so a pushed branch still gets instrumented.
+          # On a push-triggered run the dispatch inputs are unset; default all to
+          # true so a pushed branch still gets instrumented.
           $trace = if ($env:APPLY_TRACE -eq '') { 'true' } else { $env:APPLY_TRACE }
           $stubs = if ($env:APPLY_NUI_STUBS -eq '') { 'true' } else { $env:APPLY_NUI_STUBS }
+          $ready = if ($env:APPLY_DEVICE_READY -eq '') { 'true' } else { $env:APPLY_DEVICE_READY }
           if ($trace -eq 'true') {
             Write-Host 'applying 0001-nui-trace-instrumentation.patch'
             git apply --check tools/nui-spike/0001-nui-trace-instrumentation.patch
@@ -68,11 +74,17 @@ jobs:
             git apply --check tools/nui-spike/0002-nui-device-request-stubs.patch
             git apply tools/nui-spike/0002-nui-device-request-stubs.patch
           }
+          if ($ready -eq 'true') {
+            Write-Host 'applying 0003-nui-device-ready.patch'
+            git apply --check tools/nui-spike/0003-nui-device-ready.patch
+            git apply tools/nui-spike/0003-nui-device-ready.patch
+          }
           git --no-pager diff --stat
           Write-Host 'tree state:'
           git status --short
           "APPLIED_TRACE=$trace" >> $env:GITHUB_ENV
           "APPLIED_STUBS=$stubs" >> $env:GITHUB_ENV
+          "APPLIED_DEVICE_READY=$ready" >> $env:GITHUB_ENV
 
       - name: Verify the patches landed
         shell: pwsh
@@ -85,7 +97,14 @@ jobs:
           if ($env:APPLIED_STUBS -eq 'true' -and -not (Test-Path 'src/xenia/kernel/xboxkrnl/xboxkrnl_nui.cc')) {
             Write-Error 'xboxkrnl_nui.cc missing - the device-request stubs were not applied'
           }
-          Write-Host "trace=$env:APPLIED_TRACE stubs=$env:APPLIED_STUBS"
+          if ($env:APPLIED_DEVICE_READY -eq 'true') {
+            # 0003 edits an existing file, so check the buggy line is gone rather
+            # than that a file appeared.
+            if (Select-String -Quiet -Path 'src/xenia/kernel/xam/xam_nui.cc' -SimpleMatch 'kinect_initialized >> 1 & 1') {
+              Write-Error 'xam_nui.cc still returns kinect_initialized >> 1 & 1 - the 0003 fix was not applied'
+            }
+          }
+          Write-Host "trace=$env:APPLIED_TRACE stubs=$env:APPLIED_STUBS ready=$env:APPLIED_DEVICE_READY"
 
       - name: Cache Vulkan SDK
         id: cache-vulkan-sdk

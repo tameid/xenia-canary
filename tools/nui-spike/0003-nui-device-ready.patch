@@ -1,0 +1,42 @@
+diff --git a/src/xenia/kernel/xam/xam_nui.cc b/src/xenia/kernel/xam/xam_nui.cc
+index 7b5e9f9da..b1e8da1e0 100644
+--- a/src/xenia/kernel/xam/xam_nui.cc
++++ b/src/xenia/kernel/xam/xam_nui.cc
+@@ -20,6 +20,10 @@ namespace kernel {
+ namespace xam {
+ // https://web.cs.ucdavis.edu/~okreylos/ResDev/Kinect/MainPage.html
+ 
++// PHASE 0 SPIKE PATCH 0003 (see tools/nui-spike/).
++// Defined in xboxkrnl_nui.cc, patch 0002. The spike applies 0002 and 0003 together.
++DECLARE_bool(nui_fake_device);
++
+ struct X_NUI_DEVICE_STATUS {
+   /* Notes:
+      - for one side func of XamNuiGetDeviceStatus
+@@ -196,7 +200,25 @@ dword_result_t XamNuiIsDeviceReady_entry() {
+           X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS) &
+       X_RETAIL_FLAGS::KinectInitialized;
+ 
+-  return kinect_initialized >> 1 & 1;
++  // PHASE 0 SPIKE (0003). This used to be:
++  //
++  //     return kinect_initialized >> 1 & 1;
++  //
++  // kinect_initialized is a bool, so it is 0 or 1 and the shift makes the result
++  // 0 either way. XamNuiIsDeviceReady could therefore never report a ready
++  // device, for any retail-flag value. Measured against the Kinect dashboard:
++  // with the Kinect flag set and a connected camera reported, the guest called
++  // this export 1096 times and received 0 every time, then kept waiting.
++  // XamNuiHudIsEnabled and XamNuiIdentityEnrollForSignIn are gated on the same
++  // value, so none of the NUI sign-in flow could ever start.
++  //
++  // Report the NUI hardware status the comment above describes instead. There is
++  // no hardware behind this until a NUI source is attached, so with no source
++  // the answer stays "not ready" and behaviour is unchanged.
++  if (!kinect_initialized || !cvars::nui_fake_device) {
++    return 0;
++  }
++  return 0x0001;
+ }
+ DECLARE_XAM_EXPORT1(XamNuiIsDeviceReady, kNone, kImplemented);
+ 

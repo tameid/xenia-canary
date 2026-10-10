@@ -13,6 +13,8 @@ applied only while measuring.
 ```
 tools/nui-spike/
   0001-nui-trace-instrumentation.patch  the instrumentation (apply/revert)
+  0002-nui-device-request-stubs.patch   PsCam/Mca/Detroit + XUsbcamGetState
+  0003-nui-device-ready.patch           XamNuiIsDeviceReady fix (needs 0002)
   analyze.py                            trace summariser / run differ
   gen_surface.py                        NUI export surface table from the sources
   nui_surface.csv                       generated surface table (129 exports)
