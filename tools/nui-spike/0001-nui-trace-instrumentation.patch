@@ -3,7 +3,7 @@ new file mode 100644
 index 000000000..024efeab9
 --- /dev/null
 +++ b/src/xenia/kernel/nui_trace.cc
-@@ -0,0 +1,321 @@
+@@ -0,0 +1,330 @@
 +/**
 + ******************************************************************************
 + * Xenia : Xbox 360 Emulator Research Project                                 *
