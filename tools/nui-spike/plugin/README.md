@@ -15,6 +15,36 @@ Kinect to the rest of the system.
 | impersonating the device to xam | blocked on the 360 toolchain and the `xam.xex` import question |
 | packaging into a `.xex` | blocked on the 360 toolchain |
 
+## The 360 toolchain: solved
+
+The design doc flagged the 360 build environment as the main practical blocker.
+It is not one. A working, no-admin, self-contained recipe is recorded in
+[tameid/xenia-canary PR/commit `f7f05dd8c`](../..) and in the
+[`docs/kinect_spike_runbook.md`](../../../docs/kinect_spike_runbook.md) §12, and a
+reference `.xex` build lives in `tameid/xenon-toolchain-work` (not committed). Key
+points from it, since they are easy to get wrong:
+
+* `josevolpato/xenon-toolchain` **v1.0** ships prebuilt Windows binaries; the
+  README only documents *building* it under MSYS2, which is not necessary.
+* The archive contains **no DLLs**. Drop the MSYS2 runtime DLLs (msys-2.0.dll,
+  msys-gcc_s-seh-1.dll, msys-gmp-10.dll, msys-mpfr-6.dll, msys-mpc-3.dll,
+  msys-isl-23.dll, msys-iconv-2.dll, msys-charset-1.dll) into `bin/`.
+* The prefix is `xenon-`, not `xecc`. There is no `xecc` in any libxenon fork.
+* **libxenon is bare-metal and emits ELF, not a XEX.** `josevolpato`,
+  `ge0rg` and `acabey` all link at `. = 0x80000000`. The working route for a
+  xenia-loadable module is a hand-built XEX2 container: a linker script at
+  `0x82000000`, a flat image, and a small packer that writes the PE headers and
+  the `XEX_HEADER_IMPORT_LIBRARIES` table.
+* **`xam.xex` imports do work.** The import stub question is a false dichotomy:
+  libxenon has no import stub at all. The XEX2 import table is built by hand, one
+  `xex2_import_library` per library with `import_table[]` of guest addresses, each
+  slot dword `(1 << 24) | ordinal`. xenia rewrites the slot to `sc 2 / blr / nop /
+  nop` and binds **by ordinal**. Names the library `xam.xex` — not `xam.exe`,
+  which will not resolve.
+* `XNotifyBroadcast` (xam 0x28E) and `XMsgSystemProcessCall` (xam 0x1F6) are in
+  **xam.xex**, not xboxkrnl — the design doc says otherwise.
+* `DbgPrint` does no printf formatting: `%08X` prints literally.
+
 ## What is here now, and why it is already worth having
 
 ```

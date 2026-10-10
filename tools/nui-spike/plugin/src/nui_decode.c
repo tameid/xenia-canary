@@ -13,6 +13,7 @@ uint32_t NuiFrameDiskSize(uint32_t skeletons) {
   return NUI_DISK_HEADER_SIZE + skeletons * NUI_DISK_SKELETON_SIZE;
 }
 
+
 int NuiDecodeHeader(const uint8_t* data, uint32_t size, NuiFrameHeader* out) {
   if (data == NULL || out == NULL || size < NUI_DISK_HEADER_SIZE) {
     return -1;
