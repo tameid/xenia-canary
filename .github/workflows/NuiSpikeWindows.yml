@@ -91,23 +91,16 @@ jobs:
         run: |
           # Fail early and loudly if a patch silently did not apply: the build
           # would otherwise succeed and hand back an uninstrumented binary.
-          if ($env:APPLIED_TRACE -eq 'true' -and -not (Test-Path 'src/xenia/kernel/nui_trace.cc')) {
-            Write-Error 'nui_trace.cc missing - the instrumentation was not applied'
-          }
-          if ($env:APPLIED_STUBS -eq 'true' -and -not (Test-Path 'src/xenia/kernel/xboxkrnl/xboxkrnl_nui.cc')) {
-            Write-Error 'xboxkrnl_nui.cc missing - the device-request stubs were not applied'
-          }
-          if ($env:APPLIED_DEVICE_READY -eq 'true') {
-            # 0003 edits an existing file, so check the buggy line is gone rather
-            # than that a file appeared. Anchor to the start of the line: patch
-            # 0003's own comment quotes the buggy expression, and an unanchored
-            # -SimpleMatch would match the comment and fail a good build.
-            $buggy = Select-String -Path 'src/xenia/kernel/xam/xam_nui.cc' `
-              -Pattern '^\s*return\s+kinect_initialized\s*>>\s*1\s*&\s*1;'
-            if ($buggy) {
-              Write-Error 'xam_nui.cc still returns kinect_initialized >> 1 & 1 - the 0003 fix was not applied'
-            }
-          }
+          # This runs in about a second, versus ~20 minutes to find out from
+          # the compiler - and it catches the three ways Phase 0 actually broke:
+          # a stale @@ line count silently truncating a file, a truncated file
+          # failing to compile, and a cvar declared in the wrong namespace
+          # failing to link. See tools/nui-spike/verify_patches.py.
+          python tools/nui-spike/verify_patches.py `
+            tools/nui-spike/0001-nui-trace-instrumentation.patch `
+            tools/nui-spike/0002-nui-device-request-stubs.patch `
+            tools/nui-spike/0003-nui-device-ready.patch
+          if ($env:APPLIED_TRACE -eq 'true') { python tools/nui-spike/verify_patches.py --applied }
           Write-Host "trace=$env:APPLIED_TRACE stubs=$env:APPLIED_STUBS ready=$env:APPLIED_DEVICE_READY"
 
       - name: Cache Vulkan SDK

@@ -292,7 +292,7 @@ The other §8 rows (skeleton ingestion, identity stubs, hardware-status notify) 
 needed for titles that consume skeletons rather than merely probe the device, but they
 are no longer the *first* thing in the path.
 
-### Patch 0003 — the fix, ready to apply
+### Patch 0003 — the fix, verified working
 
 `tools/nui-spike/0003-nui-device-ready.patch` implements the one-line change, on top of
 0002. It is off unless `nui_fake_device` is set, so behaviour is unchanged for anyone not
@@ -305,10 +305,51 @@ running the spike:
   return 0x0001;
 ```
 
-Re-measure with it applied and the dashboard should get past `XamNuiIsDeviceReady` for the
-first time. **What it reaches afterwards is unknown** — every prior run stopped at this
-gate, so the surface beyond it has never been observed. That is the next measurement, and
-it is the one that finally tells us whether an L2 plugin is needed at all.
+**Measured, against the dashboard with all three gates open:**
+
+| call | without 0003 | with 0003 |
+|---|---|---|
+| `XamNuiIsDeviceReady` | `0x00000000` ×1096 | **`0x00000001`** ×270 |
+| `XUsbcamGetState` | `0x00000003` | `0x00000003` |
+| `XamNuiGetDeviceStatus` | `0x00000000` | `0x00000000` |
+
+The behavioural change is what matters: the dashboard **stopped polling the NUI surface
+altogether** and moved on to content enumeration, and `ResolvePath` failures fell from
+1392 to 24. So 0003 was necessary *and* sufficient to clear the gate — one line, additive,
+default-off, and readable as an upstream bug fix.
+
+**Cvar scope matters.** 0003 declares `nui_fake_device` at *global* scope, matching where
+0002 defines it. Declaring it inside `namespace xam` compiles fine and then fails at link
+with `LNK2001: xe::kernel::xam::cvars::nui_fake_device`. `verify_patches.py` checks this.
+
+### NUIView was already installed — and it now runs
+
+`content/0000000000000000/4D5308FB/00080000/3A219CD8ADA8B57F244A06C8EF49B9A4E3191EF94D`
+in the test storage root is NUIView — 44 MB, the Kinect developer test app this document
+kept saying "if you have a copy". With 0002's `PsCamDeviceRequest` stub in place it gets
+much further than recorded here before:
+
+```
+Loading module GAME:\default.xex        Module Hash: 82036225B682FDCD
+```
+
+Its NUI import surface is **three** functions, not the five previously listed:
+
+| ordinal | export | notes |
+|---|---|---|
+| 0x873 | `XamNuiIdentityGetSessionId` | implemented upstream |
+| 0x30D | `PsCamDeviceRequest` | **stubbed by 0002, called at both sites** — 4-arg then 3-arg, both `0x00000000` |
+| 0x135 | `RtlNtStatusToDosError` | ordinary kernel export |
+
+That confirms the two-`PsCamDeviceRequest`-sites observation and is the first time the stub
+has genuinely been exercised: previously this was a null import, the app concluded there was
+no camera, and it idled. Now it proceeds past the camera probe to `Error: Failed loading
+skin` and then waits at `XamInputGetKeystrokeEx`.
+
+**What this does *not* tell us.** NUIView never reaches a skeleton consumer — its surface is
+a device probe plus one identity call — so it says nothing about what a retail title does
+with skeletons. That stays the open question for the L2/L3 design. It also halts at an
+interactive prompt, so going further needs synthetic input.
 
 ### Reproducing
 
@@ -354,3 +395,47 @@ they all used `0x1F`.
 Fixed in `0001-nui-trace-instrumentation.patch` with a `cached_valid` flag. Until you
 rebuild, pass an explicit `--nui_trace_filter` — that works against the already-built
 binary and is how the numbers above were obtained.
+
+## 11. Check the patches before you build them
+
+Every failure in §8–§10 passed `git apply --check` and only surfaced minutes into a
+20-minute build. `tools/nui-spike/verify_patches.py` checks all of it in about a second,
+with no compiler:
+
+```sh
+# patch files: does every @@ header agree with the lines the hunk holds?
+python3 tools/nui-spike/verify_patches.py tools/nui-spike/000*.patch
+
+# applied tree: files present, braces balanced, cvar declared at global scope,
+# XamNuiIsDeviceReady no longer returns the bogus shift
+python3 tools/nui-spike/verify_patches.py --applied
+```
+
+The three it catches:
+
+| failure | symptom | caught by |
+|---|---|---|
+| stale `@@` count | `nui_trace.cc(320): C1075: '{': no matching token found` | header vs body line count |
+| wrong cvar namespace | `LNK2001: xe::kernel::xam::cvars::nui_fake_device` | `DECLARE_bool` before `namespace xe` |
+| verification matching its own comment | 23-second false failure | anchored regex |
+
+The CI workflow runs both before it builds. Locally, `tools/nui-spike/build-local.cmd`
+does not apply the patches for you — apply them yourself and re-run the verifier, so a bad
+patch costs a second rather than a full rebuild.
+
+## 12. Local build
+
+CI is not the only option. On Windows with VS 2022/2026, a Windows SDK, the Vulkan SDK
+(glslang/spirv-opt/spirv-dis — `fxc.exe` is *not* a substitute) and Python 3.6+ 64-bit:
+
+```bat
+tools\nui-spike\build-local.cmd
+```
+
+It puts VS's bundled CMake/Ninja and the auto-detected `VULKAN_SDK` on PATH **for that one
+process only** and runs the build; nothing persistent is changed. A patched rebuild is
+~74 steps / ~1 minute once the tree is warm, against ~20 minutes on CI. `xenia-build.py`
+is pure stdlib, so a bare Python is enough — a venv with no packages in it works fine.
+
+Still no local toolchain? Dispatch the workflow; on this public fork Actions minutes and
+artifact storage are free and uncapped.

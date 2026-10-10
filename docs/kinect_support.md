@@ -4,12 +4,13 @@
 **Constraint:** keep the fork as close to upstream `xenia-canary` as possible. Everything
 that can live outside the emulator tree *does*.
 
-> **Headline result (runbook §8):** the dashboard's NUI init is gated on
-> `XamNuiIsDeviceReady`, a **host-side** export that always returns 0 because of a bug at
-> `xam_nui.cc:199`. Guest patches and guest plugins cannot influence it. So the "zero
-> upstream diff" property below holds for the *hardware pipeline* but **not** for
-> dashboard enablement, which needs a one-line in-tree fix. Much smaller than the §8
-> fallback originally budgeted, but real — and measured rather than assumed.
+> **Headline result (runbook §8):** the dashboard's NUI init was gated on
+> `XamNuiIsDeviceReady`, a **host-side** export that always returned 0 because of a bug at
+> `xam_nui.cc:199`. Guest patches and guest plugins cannot influence it, so a one-line
+> in-tree fix was unavoidable. **That fix (patch 0003) is now written, built and measured:
+> it is sufficient.** With it applied the dashboard stops polling the NUI surface and
+> proceeds. The hardware pipeline itself still lives entirely outside the fork — the
+> divergence is one line, default-off, and reads as an upstream bug fix.
 
 **Running the spike:** see [`kinect_spike_runbook.md`](kinect_spike_runbook.md) for the
 Windows host procedure, and [`tools/nui-spike/README.md`](../tools/nui-spike/README.md)
@@ -403,7 +404,7 @@ git apply -R tools/nui-spike/0001-nui-trace-instrumentation.patch
 | Phase | Deliverable | Depends on |
 |---|---|---|
 | 0 | Spike + surface spec (§6) — **done**; gate chain resolved, §8 fix identified | — |
-| 0.5 | **Fix `XamNuiIsDeviceReady` (§8 row 2) and re-measure.** Nothing downstream is reachable until this lands | 0 |
+| 0.5 | **Fix `XamNuiIsDeviceReady` (§8 row 2)** — **done**, and verified sufficient | 0 |
 | 1 | `nui-provider` with `synthetic` + `replay` backends; IPC writer; frame format frozen; Catch2 tests for codec/smoother/mapper | 0.5 |
 | 2 | Hello-world plugin → frame-consuming plugin; `XNotifyBroadcast` handshake; skeleton ring buffer | 1 |
 | 3 | Per-title patches: skip connection checks, redirect NUI calls | 2 |

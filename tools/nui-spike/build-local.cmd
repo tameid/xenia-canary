@@ -18,6 +18,13 @@ SET "VENV=C:\Users\sparky\.venvs\xenia"
 SET "VSCMAKE=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin"
 SET "VSNINJA=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
 
+REM compile_shader_spirv.py needs glslangValidator / spirv-opt / spirv-dis from
+REM the Vulkan SDK. Its find_vulkan_tools() reads $VULKAN_SDK then falls back to
+REM PATH; the Windows SDK's fxc.exe is not a substitute.
+REM Deliberately a single-line IF: inside a parenthesised block %VULKAN_SDK%
+REM would be expanded before the FOR had run and yield an empty value.
+IF NOT DEFINED VULKAN_SDK FOR /F "delims=" %%D IN ('dir /b /ad "C:\VulkanSDK\*" 2^>nul') DO SET "VULKAN_SDK=C:\VulkanSDK\%%D"
+
 IF NOT EXIST "%VENV%\Scripts\python.exe" (
   ECHO ERROR: venv missing at %VENV%
   ECHO   py -3.14 -m venv "%VENV%"
@@ -30,8 +37,15 @@ IF NOT EXIST "%VSCMAKE%\cmake.exe" (
   EXIT /B 1
 )
 
+IF NOT EXIST "%VULKAN_SDK%\Bin\glslangValidator.exe" (
+  ECHO ERROR: Vulkan SDK not found - needed for glslangValidator / spirv-opt.
+  ECHO   compile_shader_spirv.py cannot build xenia-ui-vulkan without it.
+  ECHO   Install it, or set VULKAN_SDK to an existing install.
+  EXIT /B 1
+)
+
 REM Session-scoped only; ENDLOCAL discards all of this on exit.
-SET "PATH=%VSCMAKE%;%VSNINJA%;%VENV%\Scripts;%PATH%"
+SET "PATH=%VULKAN_SDK%\Bin;%VSCMAKE%;%VSNINJA%;%VENV%\Scripts;%PATH%"
 SET "PYTHON=%VENV%\Scripts\python.exe"
 
 CD /D "%REPO%"
@@ -39,6 +53,7 @@ CD /D "%REPO%"
 ECHO === toolchain ===
 "%PYTHON%" --version
 "%VSCMAKE%\cmake.exe" --version
+"%VULKAN_SDK%\Bin\glslangValidator.exe" --version 2>&1 | findstr /C:"Glslang Version"
 ECHO.
 
 ECHO === building ===

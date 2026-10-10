@@ -16,6 +16,8 @@ tools/nui-spike/
   0002-nui-device-request-stubs.patch   PsCam/Mca/Detroit + XUsbcamGetState
   0003-nui-device-ready.patch           XamNuiIsDeviceReady fix (needs 0002)
   analyze.py                            trace summariser / run differ
+  verify_patches.py                     hunk/brace/namespace checks (run before building)
+  build-local.cmd                       local Windows build, no persistent env changes
   gen_surface.py                        NUI export surface table from the sources
   nui_surface.csv                       generated surface table (129 exports)
   Containerfile                         podman build env (clang 19, gtk, ninja)
@@ -305,6 +307,45 @@ on **`XamNuiIsDeviceReady`, which returns `0x00000000` every single time** and c
 return otherwise — `xam_nui.cc:199` does `return kinect_initialized >> 1 & 1;` on a
 `bool`. That gate is host-side, so it is the point where guest patches and plugins run
 out of road and the in-tree fix becomes unavoidable. Runbook §8 has the full trace.
+
+**Patch 0003 fixes it, and that turned out to be sufficient.** With 0003 applied,
+`XamNuiIsDeviceReady` returns `0x00000001`, the dashboard stops polling NUI entirely and
+moves on to content enumeration, and `ResolvePath` failures drop 1392 → 24. One line,
+additive, default-off.
+
+### Always verify the patches before building them
+
+Three separate CI failures during Phase 0 all passed `git apply --check` and only showed
+up minutes into a 20-minute build:
+
+| failure | symptom |
+|---|---|
+| stale `@@` line count | `nui_trace.cc(320): C1075: '{': no matching token found` |
+| verification regex matching 0003's own comment | 23-second false failure |
+| `DECLARE_bool` inside `namespace xam` | `LNK2001: xe::kernel::xam::cvars::nui_fake_device` |
+
+None of them need a compiler to detect:
+
+```sh
+python3 tools/nui-spike/verify_patches.py tools/nui-spike/000*.patch
+python3 tools/nui-spike/verify_patches.py --applied
+```
+
+The workflow runs both before it builds. Note the second one catches the `LNK2001` class:
+it asserts `DECLARE_bool(nui_fake_device)` appears *before* `namespace xe`, because 0002
+defines the cvar at global scope.
+
+### Building locally instead of on CI
+
+```bat
+tools\nui-spike\build-local.cmd
+```
+
+Needs VS 2022/2026 + Windows SDK, the **Vulkan SDK** (glslangValidator / spirv-opt /
+spirv-dis — the Windows SDK's `fxc.exe` is not a substitute), and Python 3.6+ 64-bit.
+The script puts VS's bundled CMake/Ninja and the auto-detected `VULKAN_SDK` on PATH for
+that one process only and changes nothing persistent. A patched rebuild is ~74 steps once
+warm, versus ~20 minutes on CI.
 
 ### You do not need a live run to get the surface list
 
