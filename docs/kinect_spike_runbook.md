@@ -11,7 +11,8 @@ design it feeds.
   patches applied at build time:
   - `tools/nui-spike/0001-nui-trace-instrumentation.patch` — the tracer (throwaway)
   - `tools/nui-spike/0002-nui-device-request-stubs.patch` — `PsCam`/`Mca`/`Detroit`
-    device requests, plus the `--nui_fake_device` knob
+    device requests and the `XUsbcamGetState` camera state, all behind the
+    `--nui_fake_device` knob
 
 ---
 
@@ -127,7 +128,34 @@ not start, not that tracing is broken.
 
 ## 7. What we already know (so you don't re-measure it)
 
-From NUIView on a Linux host driving the Windows build through Proton:
+### The dashboard's NUI init chain (measured with the official Kinect dashboard)
+
+The official Kinect dashboard (`$flash_dash.xex`, title id **`FFFE07D1`** = xenia's
+`kDashboardID`, so `IsSystemTitle()` is true and `$flash_xam.xex` loads correctly) is a far
+better probe than NUIView. Running it under Proton with the tracer produced this chain:
+
+```
+XamNuiGetDeviceStatus   -> 0xC0050006   (no Kinect; X_CONFIG flag not set)
+   ... with the Kinect flag set ...
+XamNuiGetDeviceStatus   -> 0x00000000   (success)
+XUsbcamGetState (0x21D) -> 0            (CamNotConnected - hardcoded)
+   -> dashboard gives up here; black screen
+```
+
+So a black screen has (at least) two independent causes, both fixable:
+
+1. **`Kinect Initialized` not set in the storage root you launch with.** Each storage root
+   has its own `xconfig.settings`; a fresh one has the flag clear, so
+   `XamNuiGetDeviceStatus` fails and no title ever reaches the NUI surface. Check with
+   `python set-kinect-flag.py <store>\xconfig.settings show`.
+2. **`XUsbcamGetState` hardcodes "not connected"** (`xboxkrnl_usbcam.cc:38-43`). The
+   dashboard reads it immediately after a successful device-status call and stops.
+   Patch `0002` now makes it report *initialised + connected* under `--nui_fake_device`.
+
+That is the whole answer to "why is it a black screen": the guest is not broken and the
+content is not missing — it is correctly detecting an absent camera, three calls deep.
+
+### NUIView
 
 | Observation | Detail |
 |---|---|
@@ -139,20 +167,20 @@ From NUIView on a Linux host driving the Windows build through Proton:
 
 ## 8. The open question, and how to answer it
 
-`--nui_fake_device` makes `PsCam`/`Mca` report success and `Detroit` report a tilt
-controller. On Linux-under-Proton the emulator then **exited early instead of idling**
-(exit 0 instead of running to the timeout), and the log showed a stream of
-`Read access denied for device Z:\` alongside normal shutdown. Unresolved — it may be
-Proton-specific, or the guest may walk a path that needs something we have not stubbed.
+With `--nui_fake_device`, `PsCam`/`Mca` report success, `Detroit` reports a tilt controller
+and `XUsbcamGetState` reports a connected camera. What the dashboard does *next* is the
+measurement that matters — the exports after `XUsbcamGetState` are the surface the
+Kinect provider must eventually satisfy.
 
-Three runs to make it deterministic:
+Two runs to make it deterministic:
 
-1. **baseline** — no `--nui_fake_device`, mask `0x1F`. Confirm it idles and returns
-   `C0000001`.
-2. **fake device** — with `--nui_fake_device`, same mask. If it survives, diff the two
-   traces: any new `XamNui*` calls are the surface a title walks when a Kinect is present.
-3. **real hardware later** — `--gpu null` if the crash turns out to be presentational, since
-   the trace does not need pixels.
+1. **baseline** — Kinect flag set, *no* `--nui_fake_device`, mask `0x1F`. Expect it to
+   stop at `XUsbcamGetState`.
+2. **fake device** — same plus `--nui_fake_device`. Diff the traces: every new call is
+   part of the "Kinect present" path.
+
+On Linux-under-Proton the faked run exited early rather than continuing; a real Windows
+host is the cleaner environment for this.
 
 Please attach, for whichever run fails:
 
