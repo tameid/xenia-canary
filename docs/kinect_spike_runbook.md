@@ -155,6 +155,35 @@ So a black screen has (at least) two independent causes, both fixable:
 That is the whole answer to "why is it a black screen": the guest is not broken and the
 content is not missing — it is correctly detecting an absent camera, three calls deep.
 
+### The next gate, and a sanity check you need
+
+With all three patched (`--nui_fake_device` + the Kinect flag), the dashboard's NUI calls
+are only these, in this order:
+
+```
+XamNuiHudSetEngagedTrackingID   x2
+XamNuiGetDeviceStatus           x2   -> 0x00000000 (success)
+XUsbcamGetState                 x2   -> 0x00000003 (initialised + connected)
+ExGetXConfigSetting(7, 0x04)          (XCONFIG_CONSOLE_CAMERA_SETTINGS)
+ExSetXConfigSetting(7, 0x04)          (records the camera state; xenia honours it)
+```
+
+It then stops calling anything NUI-related. That is where the next gate is — but on
+Linux/Proton you cannot see it, because:
+
+> **No swapchain was ever created.** `VulkanPresenter: Created 1280x720 swapchain ...`
+> is absent from every Proton log here. The emulator window never presents anything, so
+> "black screen" there is a *presentation* failure, not a Kinect one.
+
+**Sanity check on your Windows host, before reading anything into the screen:** confirm
+your log contains `Created ... swapchain`. If it does not, a black screen tells you
+nothing about NUI. If it does, and the Kinect dialogs still do not appear, that is the
+real result.
+
+Other unimplemented exports the dashboard needs (they appear as `undefined extern call`):
+`EtxProducerRegister`, `XdfInitialize`, `VdDisplayFatalError`. None NUI-specific, all
+worth adding to the not-declared list if a title needs them.
+
 ### NUIView
 
 | Observation | Detail |
