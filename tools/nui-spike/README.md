@@ -299,7 +299,15 @@ pushes (after a confirmation prompt). Then:
 
 1. Actions → **NUI Spike (Windows)** → Run workflow — or just wait for the push
    trigger, since the workflow also fires on pushes to `nui-spike`.
-2. Download the `xenia_canary_nui` artifact.
+2. Download the artifact, from the browser or with the CLI:
+
+   ```sh
+   gh run download <run-id> --repo <user>/xenia-canary --name xenia_canary_nui
+   ```
+
+   It unzips to `spike/xenia_canary.exe` plus the analysis tooling. A build takes
+   ~25 min, dominated by the shallow submodule clones and the full `xenia-app`
+   compile.
 
 Two booleans on the dispatch control what gets applied: `apply_trace` (patch 0001,
 the tracer) and `apply_nui_stubs` (patch 0002, the `PsCam`/`Mca`/`Detroit`

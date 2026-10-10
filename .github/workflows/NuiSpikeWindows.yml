@@ -127,17 +127,18 @@ jobs:
           $exe = "build\bin\Windows\Release\xenia_canary.exe"
           if (-not (Test-Path $exe)) { Write-Error "no $exe"; exit 1 }
           if ((Get-Item $exe).Length -le 100000) { Write-Error "exe suspiciously small"; exit 1 }
-          $path = "xenia_canary_nui.7z"
-          # Ship the analysis tooling too, so a spike run needs nothing else.
-          7z a $path $exe LICENSE `
-              .\tools\nui-spike\analyze.py `
-              .\tools\nui-spike\gen_surface.py `
-              .\tools\nui-spike\set-kinect-flag.py `
-              .\tools\nui-spike\nui_surface.csv `
-              .\tools\nui-spike\README.md `
-              -mx9 -bb3
-          if ((Get-Item $path).Length -le 100000) { Write-Error "archive too small"; exit 1 }
-          "path=$path" >> $env:GITHUB_OUTPUT
+          # Flatten into one directory so the artifact is a plain file set.
+          # Do NOT pre-compress into a .7z: with `archive: false` GitHub then
+          # serves the blob as-is and `gh run download` refuses to unpack it.
+          New-Item -ItemType Directory -Force -Path .\spike | Out-Null
+          Copy-Item $exe .\spike\xenia_canary.exe
+          Copy-Item LICENSE .\spike\LICENSE
+          Copy-Item tools\nui-spike\analyze.py      .\spike\ -ErrorAction SilentlyContinue
+          Copy-Item tools\nui-spike\gen_surface.py  .\spike\ -ErrorAction SilentlyContinue
+          Copy-Item tools\nui-spike\set-kinect-flag.py .\spike\ -ErrorAction SilentlyContinue
+          Copy-Item tools\nui-spike\nui_surface.csv .\spike\ -ErrorAction SilentlyContinue
+          Copy-Item tools\nui-spike\README.md       .\spike\ -ErrorAction SilentlyContinue
+          "path=./spike" >> $env:GITHUB_OUTPUT
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -146,7 +147,6 @@ jobs:
           path: ${{ steps.package.outputs.path }}
           if-no-files-found: error
           retention-days: 14
-          archive: false
 
       - name: Summary
         if: always()
