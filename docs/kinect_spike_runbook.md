@@ -351,6 +351,28 @@ a device probe plus one identity call — so it says nothing about what a retail
 with skeletons. That stays the open question for the L2/L3 design. It also halts at an
 interactive prompt, so going further needs synthetic input.
 
+#### Driving it: synthetic input does not reach the guest (yet)
+
+NUIView parks at `XamInputGetKeystrokeEx` and waits. Injecting input at the host works —
+`SetForegroundWindow` succeeds and `SendInput` reports success — but the guest never sees
+a keystroke: the call keeps returning `0x48F`, which is `X_ERROR_DEVICE_NOT_CONNECTED`
+(`xam_input.cc:173-220` returns that when nothing is pending).
+
+Two traps found on the way, both worth knowing before retrying:
+
+* **`keyboard_mode` defaults to 0 = Disabled.** With it off, host keys are not delivered at
+  all. Set it to 1 (or 2, which needs a controller connected).
+* **The persisted config beats the command line.** `xenia-canary.config.toml` in the
+  storage root is loaded over `--keyboard_mode 1`, and the startup CONFIG DUMP prints the
+  *pre-override* value — so the dump still reads `0` and it looks like the flag was
+  ignored. Edit the TOML.
+
+With `keyboard_mode = 1` confirmed in the running process, input still did not arrive, so
+the gap is in xenia's SDL host→guest keyboard path rather than in anything spike-specific.
+Driving the menus is also the wrong lever for this spike: NUIView is a Kinect test app, so
+its interesting screens want skeletons, not keystrokes. The useful next step is a skeleton
+feed — i.e. the L2/L3 work itself — rather than more input plumbing.
+
 ### Reproducing
 
 Both patches, Kinect flag on, and an **explicit** filter — see the tracer bug in §9:
