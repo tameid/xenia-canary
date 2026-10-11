@@ -20,7 +20,18 @@ int NuiDecodeFrame(const uint8_t* data, uint32_t size, NuiFrame* out) {
   if (rc != 0) {
     return rc;
   }
-  out->header = raw;
+
+  /* Field-by-field rather than a struct assignment: a whole-struct copy lowers
+   * to memcpy, and a freestanding guest has none. Extra lines, but it is the
+   * difference between linking and not. */
+  out->header.frame_id = raw.frame_id;
+  out->header.flags = raw.flags;
+  out->header.num_skeletons = raw.num_skeletons;
+  out->header.capture_timestamp_us = raw.capture_timestamp_us;
+  out->header.host_timestamp_us = raw.host_timestamp_us;
+  out->header.num_depth_frames = raw.num_depth_frames;
+  out->header.num_ir_frames = raw.num_ir_frames;
+  out->header.num_color_frames = raw.num_color_frames;
 
   uint32_t count = raw.num_skeletons;
   if (count > out->capacity) {

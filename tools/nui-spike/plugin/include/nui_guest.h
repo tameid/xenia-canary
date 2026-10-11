@@ -109,20 +109,17 @@ static __inline uint64_t NuiReadU64(const uint8_t* p) {
 }
 
 static __inline float NuiReadF32(const uint8_t* p) {
-  uint32_t bits = NuiReadU32(p);
-  float result;
-  /* Byte-swap through an integer so this does not depend on host endianness:
-   * the same source must work for the little-endian host test build and the
-   * big-endian guest. */
-  uint8_t swapped[4];
-  swapped[0] = (uint8_t)(bits & 0xFF);
-  swapped[1] = (uint8_t)((bits >> 8) & 0xFF);
-  swapped[2] = (uint8_t)((bits >> 16) & 0xFF);
-  swapped[3] = (uint8_t)((bits >> 24) & 0xFF);
-  /* Plain memcpy, not __builtin_memcpy: the guest compiler is GCC and the host
-   * test build is MSVC, and this file has to compile in both. */
-  memcpy(&result, swapped, sizeof(result));
-  return result;
+  const uint32_t bits = NuiReadU32(p);
+  /* Reinterpret the numeric value as a float. A union rather than memcpy so
+   * this stays freestanding, and rather than a byte shuffle so it is correct
+   * on a big-endian guest: `bits` is already the numeric value, and the union
+   * reinterprets that value rather than its byte order. */
+  union {
+    uint32_t u;
+    float f;
+  } bits_to_float;
+  bits_to_float.u = bits;
+  return bits_to_float.f;
 }
 
 typedef struct {

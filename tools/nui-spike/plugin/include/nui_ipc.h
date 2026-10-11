@@ -15,6 +15,17 @@
 #include "nui_frame.h"
 #include "nui_guest.h"
 
+/* Guest-side integer type the plugin and its callers use. */
+typedef uint32_t u32;
+
+/* Frame buffer sizing: the header's wire maximum, not the decoded maximum, so
+ * a file that claims more skeletons than we decode is refused rather than
+ * silently truncated. */
+#define NUI_IPC_MAX_SKELETONS 8
+
+#define NUI_IPC_MAX_FRAME_BYTES \
+  (NUI_DISK_HEADER_SIZE + NUI_IPC_MAX_SKELETONS * NUI_DISK_SKELETON_SIZE)
+
 /* Desired-access for the frame files. */
 #define GENERIC_READ 0x80000000u
 
@@ -32,6 +43,12 @@ typedef struct {
   uint32_t reserved;
   uint32_t attributes;
 } NuiObjectAttributes;
+
+/* IO_STATUS_BLOCK: xenia writes status at 0 and the byte count at 4. */
+typedef struct {
+  uint32_t status;
+  uint32_t information;
+} NuiIoStatusBlock;
 
 typedef struct {
   uint32_t last_slot;
@@ -73,7 +90,7 @@ unsigned int NtCreateFile(unsigned int* handle_out, unsigned int desired_access,
                           unsigned int create_options);
 unsigned int NtReadFile(unsigned int file_handle, unsigned int event_handle,
                         void* apc_routine_ptr, void* apc_context,
-                        void* io_status_block, void* buffer,
+                        NuiIoStatusBlock* io_status_block, void* buffer,
                         unsigned int buffer_length, void* byte_offset_ptr);
 unsigned int NtClose(unsigned int handle);
 
