@@ -66,12 +66,39 @@ dword_result_t XamNuiGetDeviceStatus_entry(
 
   status_ptr.Zero();
 
-  const bool kinect_initialized =
+  const uint32_t retail_flags =
       kernel_state()->xconfig()->ReadSetting<uint32_t>(
-          X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS) &
-      X_RETAIL_FLAGS::KinectInitialized;
+          X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS);
+  // PHASE 0 SPIKE. Nothing in xenia ever sets X_RETAIL_FLAGS::KinectInitialized
+  // (0x20000000) -- on a real 360 it is written by the Kinect tuner during
+  // setup, and there is no tuner here. Measured against Kinect Adventures the
+  // store held retail_flags=0x00000040, i.e. KinectInitialized clear, so every
+  // NUI export that keys off it reported "no device" no matter what the cvar
+  // said. Under nui_fake_device we therefore claim initialisation directly
+  // rather than waiting for a flag nothing will ever set.
+  const bool kinect_initialized =
+      (retail_flags & X_RETAIL_FLAGS::KinectInitialized) ||
+      cvars::nui_fake_device;
+  XELOGKERNEL("NUITRACE retail_flags={:08X} kinect_initialized={}",
+              retail_flags, kinect_initialized ? 1u : 0u);
 
-  status_ptr->status = kinect_initialized;
+  // PHASE 0 SPIKE. `status` is a bitfield, not a boolean. The notes above are
+  // explicit about which bits callers test:
+  //
+  //   - the failure path sets status to 0x20
+  //   - the success paths set status to (<something> | 0x44) or (| 0x40)
+  //
+  // So bit 5 (0x20) means "problem" and bit 6 (0x40) means "device present".
+  // This used to write `status = kinect_initialized`, which set bit 0 only and
+  // left 0x40 clear -- i.e. it reported a device that was neither present nor
+  // absent, which is the one combination no caller can act on.
+  //
+  // Measured against Kinect Adventures (Microsoft, Kinect-required): with
+  // status = 1 the title called this export exactly once and then went
+  // straight to XamShowNuiTroubleshooterUI(0xff, 0, 0) without ever touching
+  // XUsbcam*. 0xFF is the fixed user-index xam passes for a generic hardware
+  // fault, and it never retried, so there is no later call to correct it.
+  status_ptr->status = kinect_initialized ? 0x44 : 0x20;
   return kinect_initialized ? X_ERROR_SUCCESS : 0xC0050006;
 }
 DECLARE_XAM_EXPORT1(XamNuiGetDeviceStatus, kNone, kStub);
@@ -197,10 +224,14 @@ dword_result_t XamNuiIsDeviceReady_entry() {
      - 0x0004
      - 0x0040
   */
+  // PHASE 0 SPIKE. Same reasoning as XamNuiGetDeviceStatus: nothing in xenia
+  // ever sets X_RETAIL_FLAGS::KinectInitialized, so the raw flag alone can only
+  // ever report "not ready". See the comment there.
   const bool kinect_initialized =
-      kernel_state()->xconfig()->ReadSetting<uint32_t>(
-          X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS) &
-      X_RETAIL_FLAGS::KinectInitialized;
+      (kernel_state()->xconfig()->ReadSetting<uint32_t>(
+           X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS) &
+       X_RETAIL_FLAGS::KinectInitialized) ||
+      cvars::nui_fake_device;
 
   // PHASE 0 SPIKE (0003). This used to be:
   //
@@ -217,7 +248,7 @@ dword_result_t XamNuiIsDeviceReady_entry() {
   // Report the NUI hardware status the comment above describes instead. There is
   // no hardware behind this until a NUI source is attached, so with no source
   // the answer stays "not ready" and behaviour is unchanged.
-  if (!kinect_initialized || !cvars::nui_fake_device) {
+  if (!kinect_initialized) {
     return 0;
   }
   return 0x0001;
