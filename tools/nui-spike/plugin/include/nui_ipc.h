@@ -15,8 +15,10 @@
 #include "nui_frame.h"
 #include "nui_guest.h"
 
-/* Guest-side integer type the plugin and its callers use. */
+/* Guest-side integer types the plugin and its callers use. u16 is needed for
+ * xconfig category/setting arguments, which are word_t on the kernel side. */
 typedef uint32_t u32;
+typedef uint16_t u16;
 
 /* Frame buffer sizing: the header's wire maximum, not the decoded maximum, so
  * a file that claims more skeletons than we decode is refused rather than

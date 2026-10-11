@@ -262,6 +262,8 @@ storage_root()/plugins/<TITLE_ID>/
    for camera messages and `0x2Cxxx` for identity, matching the ranges documented at
    `xam_app.cc:20-21`. Implement the callbacks that `xam_app.cc:165-176` leaves TODO
    (`0x2C009` Kinect identity callback is already registered by xam and currently ignored).
+   **See §4a — this item is written but goes nowhere, and cannot be made to without
+   patching xenia.**
 3. `XNotifyBroadcast(kXNotificationSystemNUIHardwareStatusChanged /*0x00060019*/, state)` on
    connect/disconnect, and `kXNotificationSystemNUIPause /*0x0006001A*/` while a modal xam
    dialog is up — exactly the protocol described at `src/xenia/xbox.h:194-196`.
@@ -279,6 +281,60 @@ storage_root()/plugins/<TITLE_ID>/
 * The plugin runs as guest code at the game's privilege level inside xenia's memory model —
   it is well isolated and hash-gated, but it is per-title work (one plugin per title id,
   sometimes per module hash).
+
+---
+
+## 4a. Finding: xam has no skeleton consumer (measured 2026-10-11)
+
+The plan assumed the plugin could feed xam by impersonating the device. It cannot,
+and the reason is worth recording because it changes what L2 is.
+
+**What the guest can do today.** The plugin calls `ExReadModifyWriteXConfigSettingUlong`
+(xboxkrnl `0x2BC`) to set `X_RETAIL_FLAGS::KinectInitialized`. This is the same
+operation as the console-settings checkbox, and it works from guest code:
+
+```
+set_flag=0                          # STATUS_SUCCESS
+get_device_status=3221553158        # 0xC0050006 - no device
+status_after=0                      # X_ERROR_SUCCESS - device present
+```
+
+This is the *only* part of the NUI surface the guest can change. xconfig lives on the
+host (`xconfig_data_`, a C++ struct); `ReadSetting` is a `memcpy` out of host memory
+(`xconfig.cc:46-57`), so no amount of guest RAM writing reaches it. An export is the
+only door, and `0x2BC` is the one that writes.
+
+**What xam has.** Nothing to feed. Every skeleton path is a stub that ignores its
+arguments and returns a constant:
+
+| Export | Ordinal | Implementation |
+| --- | --- | --- |
+| `XamNuiSkeletonGetBestSkeletonIndex` | `0x893` | returns `0xFFFFFFFFFFFFFFFF` |
+| `XamNuiPlayerEngagementUpdate` | `0x892` | empty body, does nothing |
+| `XamNuiGetDepthCalibration` | `0x860` | returns `STATUS_NO_SUCH_FILE` |
+| `XUsbcamGetState` | `0x21D` | returns `CamNotConnected`, constant |
+
+There is no skeleton buffer anywhere in the tree. `grep -ri skeleton src/xenia` matches
+only the two export names — there is no storage, no ring buffer, no consumer. The
+`0x2Bxxx` / `0x2Cxxx` message ranges that §4 item 2 proposes to impersonate are, in
+`xam_app.cc:153-176`, a log line and a registered-but-ignored callback.
+
+**Consequences.**
+
+* L2 cannot be completed guest-side. Not "is hard" — cannot. There is no host state for
+  the frame to land in. Closing this needs a patch to xenia that adds the consumer
+  (skeleton storage in `xam_state`, and real implementations of the two stubs above).
+* This does not undermine the provider or the wire format. The provider is correct and
+  the guest decodes its frames; that is the half that was in doubt and it is settled.
+  What is missing is entirely on the emulator side.
+* It does mean the spike should stop calling this "feeding xam". It sets the device
+  flag and reads frames. Two real achievements, but the plan's framing overstated what
+  was connected.
+
+**Revised order.** Build the xenia-side consumer first (skeleton storage +
+`XamNuiSkeletonGetBestSkeletonIndex` / `XamNuiPlayerEngagementUpdate`), then the guest
+plugin becomes a thin shim over an interface that already exists. Doing the guest side
+first, as planned, was backwards — it optimised the part that was already working.
 
 ---
 

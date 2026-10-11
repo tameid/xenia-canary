@@ -1,4 +1,4 @@
-﻿/*
+/*
  * thunks.S - XEX import thunk slots.
  *
  * Each 16-byte slot starts with the 32-bit XEX import record:
@@ -42,6 +42,9 @@
 	THUNK thunk_XNotifyBroadcast,                0x28E
 	THUNK thunk_XMsgSystemProcessCall,           0x1F6
 
+/* xboxkrnl.exe - guest-callable xconfig write, so the plugin can change NUI state. xconfig lives on the HOST; guest RAM cannot reach it. */
+	THUNK thunk_ExReadModifyWriteXConfigSettingUlong, 0x2BC
+
 /* Alias the public names onto the slots so C calls ordinary symbols. */
 	.set DbgPrint,                             thunk_DbgPrint
 	.set NtCreateFile,                         thunk_NtCreateFile
@@ -53,6 +56,7 @@
 	.set XamNuiSkeletonGetBestSkeletonIndex,   thunk_XamNuiSkeletonGetBestSkeletonIndex
 	.set XNotifyBroadcast,                     thunk_XNotifyBroadcast
 	.set XMsgSystemProcessCall,                thunk_XMsgSystemProcessCall
+	.set ExReadModifyWriteXConfigSettingUlong, thunk_ExReadModifyWriteXConfigSettingUlong
 
 	.globl DbgPrint
 	.globl NtCreateFile
@@ -64,3 +68,4 @@
 	.globl XamNuiSkeletonGetBestSkeletonIndex
 	.globl XNotifyBroadcast
 	.globl XMsgSystemProcessCall
+	.globl ExReadModifyWriteXConfigSettingUlong

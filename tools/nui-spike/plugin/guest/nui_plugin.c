@@ -24,6 +24,10 @@ extern u32 XamNuiIsDeviceReady(void);
 extern u32 XamNuiPlayerEngagementUpdate(u32 a, u32 b);
 extern u32 XamNuiSkeletonGetBestSkeletonIndex(int index);
 
+/* xboxkrnl.exe 0x2BC - category 3 (user), setting 0x0C (retail_flags). */
+extern u32 ExReadModifyWriteXConfigSettingUlong(u16 category, u16 setting,
+                                                u32 bit_affected, u32 flag);
+
 /* How many poll iterations before giving up. A proof-of-concept run: enough
  * iterations that a live provider publishing at 30 Hz is certainly seen, and
  * bounded so a quiet run ends and prints its counters instead of spinning. */
@@ -86,6 +90,21 @@ static void probe(void) {
   /* Ambient device state first, so the log shows both halves. */
   SayLine("nui-plugin: is_device_ready=", XamNuiIsDeviceReady());
   SayLine("nui-plugin: get_device_status=", XamNuiGetDeviceStatus(status_block));
+
+  /*
+   * Set KinectInitialized before anything else touches device state.
+   *
+   * xconfig lives on the HOST, not in guest memory, so this cannot be done by
+   * writing RAM - it has to go through an export. ExReadModifyWriteXConfig-
+   * SettingUlong is the guest-callable one, and it is the same thing the
+   * console-settings "Kinect Initialized" checkbox does.
+   */
+  SayLine("nui-plugin: set_flag=",
+          ExReadModifyWriteXConfigSettingUlong(3u, 0x0Cu, 0x20000000u, 0x20000000u));
+
+  /* Re-read to confirm the change was visible, rather than assuming it. */
+  SayLine("nui-plugin: ready_after=", XamNuiIsDeviceReady());
+  SayLine("nui-plugin: status_after=", XamNuiGetDeviceStatus(status_block));
 
   /*
    * The poll loop.

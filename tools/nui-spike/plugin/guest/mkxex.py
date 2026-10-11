@@ -65,6 +65,7 @@ PAGE_SIZE = 0x10000
 # costs an afternoon, and the reason the table lives in one place.
 IMPORTS = [
     ("xboxkrnl.exe", 0, [
+        (0x2BC, 0x820020A0),  # ExReadModifyWriteXConfigSettingUlong
         (0x003, 0x82002000),  # DbgPrint
         (0x0D2, 0x82002010),  # NtCreateFile
         (0x0F0, 0x82002020),  # NtReadFile
