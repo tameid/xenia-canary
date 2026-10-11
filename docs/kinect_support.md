@@ -510,6 +510,51 @@ so `game:\NUIView.xzp` resolves. That is plausible to fix in xenia's content man
 it is a separate piece of work from anything in this document, and until it is done
 NUIView cannot tell us anything about NUI — it never gets past its own first screen.
 
+### The Gunstringer: a real Kinect title runs, and gets further than the dashboard
+
+The user supplied a copy of **The Gunstringer** (Twisted Pixel, XBLA), a Kinect-*required*
+Western puppet shooter — a genuine NUI consumer, and the first one on this machine.
+Run from a clean store, 150 s, `nui_fake_device = true`.
+
+**It runs.** Unencrypted `XEX2` `default.xex` (12.3 MB) alongside 3.8 GB of loose assets:
+`.bik` video, `.xpr` textures, `.xwb` audio banks. The log shows it loading 1280x720
+textures, decoding `Streaming.xwb` through `XmaContext` frame by frame, and drawing. This
+is not a stalled boot — it is a game playing its intro.
+
+`game:` **resolves correctly** here, unlike NUIView:
+
+```
+NtCreateFile(..., game:\intro1.ptc, ...)
+NtCreateFile(..., game:\resident.xpr, ...)
+NtCreateFile(..., game:\Streaming.xwb, ...)
+```
+
+So the NUIView content-mount problem does not apply to a title launched this way — worth
+recording, because it means NUIView's failure was not a general `game:` defect.
+
+**But it never reaches NUI.** Zero calls to any `XamNui*` or `XUsbcam*` export, with the
+fake-device flag on or off. It is stuck well before that, in the intro:
+
+```
+NtQueryVolumeInformationFile(F80000B0, ...)  x34942
+xeRtlNtStatusToDosError 103 => 3E5            # 0x103 = STATUS_PENDING, every time
+```
+
+A busy-poll on a volume query that never completes, then teardown of the handles and a
+fresh load — repeating. That is an audio-streaming path (`Streaming.xwb` / `Commentary.xwb`)
+blocking on a pending file query, which is an xenia file-system or audio issue, not a NUI
+one.
+
+Useful negative: the flag has no effect here either, because NUI is never consulted. And
+the game is small and quick to load, which makes it a *better* probe than the dashboard
+once this stall is cleared — no dashboard-scale boot, and a title that genuinely requires
+Kinect rather than merely supporting it.
+
+Also of note: the XBLA-installed `PIRS` container (`4D5309DF033F0001`, 6 MB) sits
+alongside the loose assets and is not needed — `default.xex` plus the loose files is a
+complete, directly loadable layout. That is the same trick NUIView's container needed and
+did not get.
+
 ### `--nui_fake_device` was never actually set
 
 Every run so far passed `--nui_fake_device` on the command line and the log printed
