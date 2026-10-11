@@ -428,6 +428,35 @@ So the next emulator-side step is not `XUsbcamReadFrame`. It is broadcasting
 stay, because once that notification lands they are what reveal the capture mode and
 frame layout.
 
+### The real dashboard, measured (2026-10-11): the gate does not open
+
+Ran the official Kinect dashboard (`$flash_dash.xex`, NXE Kinect flash) twice from a
+clean store, once per flag state, 90 s each, and counted the calls:
+
+| export | flag off | flag on |
+| --- | --- | --- |
+| `XUsbcamGetState` | 15774 | 16005 |
+| `XamNuiIsDeviceReady` | 6027 | 6113 |
+| `XamNuiGetDeviceStatus` | 2 | 2 |
+| `XUsbcamCreate` | 0 | 0 |
+| `XUsbcamReadFrame` | 0 | 0 |
+| `XNotifyGetNext` (runtime) | 0 | 0 |
+
+**The flag makes no difference, and the camera is never opened either way.** The
+broadcast fires exactly once and the dashboard still does not reach `Create`.
+
+Two things were verified as genuinely in place for the flag-on run, so this is not
+another misconfigured run: `nui_fake_device = true` in the log, and
+`X_RETAIL_FLAGS::KinectInitialized` set in the store's `xconfig.settings` — which is
+what patch 0003's `XamNuiIsDeviceReady` needs to return non-zero. It returns 0
+anyway, so the guest is not acting on that return, or something else gates it.
+
+So the dashboard remains unsuitable as the driver for this work: it consumes the
+camera only under conditions xenia does not yet reproduce, and it will not tell us
+what `SetConfig`/`SetCaptureMode` want because it never calls them. The plugin-driven
+probe (`smoke.ps1` and `ProbeCamera`) is the instrument that actually moves, and it
+is the one to keep extending.
+
 ### `--nui_fake_device` was never actually set
 
 Every run so far passed `--nui_fake_device` on the command line and the log printed
