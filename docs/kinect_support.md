@@ -604,6 +604,44 @@ It has still made zero runtime NUI calls, so the stubs are not yet logging what 
 What is now known: it *wants* exactly the family we instrumented, and the stubs will answer
 the moment it reaches them. That is a much stronger position than the dashboard gave us.
 
+### Kinect Adventures: first real NUI call from any title, and a user-account blocker
+
+User-supplied `kinect_adventures.iso` (7.8 GB DVD image). **xenia mounts an ISO directly**
+— `xenia_main.cc:120` documents "the target .xex or .iso to execute", and `DiscImageDevice`
+is a proper VFS device (`vfs/devices/disc_image_device.cc`). No extraction step is needed:
+
+```
+DiscImageDevice::Initialize
+Loading module GAME:\default.xex
+```
+
+Microsoft's own first-party Kinect title, and it behaves differently from both previous
+candidates. It got further:
+
+```
+XamNuiGetDeviceStatus      1
+XamUserGetDeviceContext    64788     <- the spin
+```
+
+**That single `XamNuiGetDeviceStatus` is the first NUI call any real title has made** — the
+dashboard never got there, and The Gunstringer called nothing. Its call sequence so far:
+
+```
+XamNuiGetDeviceStatus(ptr)
+... then XamUserGetDeviceContext for users 0, 1, 2 ...
+```
+
+**The blocker is an absent user account, not the camera.** `XamUserGetDeviceContext` is
+spinning for all three user indices with a null result. `XamUserGetXUID` was called 13 times
+and `XamGetStagingMode` never — the title is past staging and into a signed-in flow it
+cannot complete. Both Kinect conditions were satisfied during the run
+(`KinectInitialized` set in the store's `xconfig.settings`, `nui_fake_device = true`), so
+this is not another flag-configuration miss.
+
+So the title is waiting on a logged-in profile before it will touch NUI. That is testable —
+xenia supports creating profiles — and unlike the previous two candidates this is a known
+xenia capability rather than an unknown one.
+
 ### `--nui_fake_device` was never actually set
 
 Every run so far passed `--nui_fake_device` on the command line and the log printed
