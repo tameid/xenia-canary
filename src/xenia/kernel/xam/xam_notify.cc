@@ -31,6 +31,13 @@ uint32_t xeXamNotifyCreateListener(uint64_t mask, uint32_t is_system,
       object_ref<XNotifyListener>(new XNotifyListener(kernel_state()));
   listener->Initialize(mask, is_system, max_version);
 
+  // PHASE 2 SPIKE: flush any armed NUI hardware-status notification now that a
+  // listener exists. Broadcasting it when the device state changed is too early -
+  // the guest registers its NUI listener hundreds of lines later, and a
+  // notification sent before that is enqueued into nothing and lost.
+  // Registration is the first point guaranteed to be after the listener exists.
+  xboxkrnl::BroadcastNuiHardwareStatusChanged();
+
   // Handle ref is incremented, so return that.
   uint32_t handle = listener->handle();
 

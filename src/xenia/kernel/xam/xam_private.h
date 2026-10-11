@@ -27,6 +27,17 @@ xe::cpu::Export* RegisterExport_xam(xe::cpu::Export* export_entry);
 #undef XE_MODULE_EXPORT_GROUP
 
 }  // namespace xam
+
+// Phase 2 NUI spike. Fires an armed kXNotificationSystemNUIHardwareStatusChanged
+// once a notify listener exists; armed by XUsbcamGetState. Declared here because
+// xam_notify.cc needs it and it lives in xboxkrnl - but outside namespace xam,
+// since placing it inside would capture the unqualified lookups every other xam
+// source file makes into xe::kernel::xboxkrnl.
+namespace xboxkrnl {
+void ArmNuiHardwareStatusBroadcast();
+void BroadcastNuiHardwareStatusChanged();
+}  // namespace xboxkrnl
+
 }  // namespace kernel
 }  // namespace xe
 
