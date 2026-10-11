@@ -28,6 +28,18 @@ extern u32 XamNuiSkeletonGetBestSkeletonIndex(int index);
 extern u32 ExReadModifyWriteXConfigSettingUlong(u16 category, u16 setting,
                                                 u32 bit_affected, u32 flag);
 
+/* xboxkrnl.exe - the camera driver. Argument counts are not known; these are
+ * the shapes xenia's own stub declares (xboxkrnl_usbcam.cc) and are being
+ * confirmed here rather than assumed. */
+extern u32 XUsbcamCreate(u32 buffer, u32 buffer_size, void* handle_out);
+extern u32 XUsbcamSetCaptureMode(u32 capture_mode);
+extern u32 XUsbcamSetConfig(u32 a, u32 config_ptr, u32 c);
+extern u32 XUsbcamGetConfig(u32 config_ptr);
+extern u32 XUsbcamSetView(u32 view);
+extern u32 XUsbcamGetState(void);
+extern u32 XUsbcamReadFrame(u32 a, u32 b, u32 buffer_ptr, u32 d);
+extern u32 XUsbcamDestroy(u32 handle);
+
 /* How many poll iterations before giving up. A proof-of-concept run: enough
  * iterations that a live provider publishing at 30 Hz is certainly seen, and
  * bounded so a quiet run ends and prints its counters instead of spinning. */
@@ -71,6 +83,74 @@ static void Say(const char* text) { DbgPrint(text); }
 
 /* --- the probe ---------------------------------------------------------- */
 
+/* --- the camera driver, driven from here --------------------------------- */
+
+/*
+ * Why this exists, and why it is not the dashboard.
+ *
+ * The Kinect dashboard imports the whole XUsbcam* family but never gets far
+ * enough to use most of it: it calls XamNuiGetDeviceStatus and XUsbcamGetState,
+ * registers a notify listener for kXNotificationSystemNUIHardwareStatusChanged,
+ * and then waits. It never calls Create, SetConfig, SetCaptureMode or
+ * ReadFrame - so it cannot tell us what those want, and asking it costs a full
+ * dashboard boot to learn nothing.
+ *
+ * Driving the sequence from the plugin means every call and every return is in
+ * the log, in an order chosen here rather than one dictated by a title's init
+ * path. What it cannot tell us is what a *real* title would pass - that still
+ * needs a real title. What it does establish is the emulator side: whether the
+ * exports are reachable, what they return, and what buffer geometry the device
+ * accepts.
+ */
+static void ProbeCamera(void) {
+  /* 0x4B000 is the size xenia's own XUsbcamCreate documents, and it is exactly
+   * 640*480*1 - one 8-bit frame.
+   *
+   * Static, not stack: the guest stack is small and 307 KB would blow it. It has
+   * to live in .bss, which sits after .data at 0x82010000 inside an image the
+   * linker script lays out in 64 KiB pages - so it must be whole pages. Allocated
+   * here rather than grown dynamically because this build is freestanding with
+   * no allocator. */
+  static unsigned char cam_buffer[0x4C000];  /* 0x4B000 rounded up to pages */
+  static u32 config_block[16];
+  u32 handle = 0;
+
+  Say("nui-plugin: --- camera");
+
+  config_block[0] = 0;
+  SayLine("nui-plugin: cam_getstate=", XUsbcamGetState());
+
+  SayLine("nui-plugin: cam_create=",
+          XUsbcamCreate((u32)cam_buffer, 0x4B000u, &handle));
+  SayLine("nui-plugin: cam_handle=", handle);
+
+  /* Capture mode 0..3 as an enum is a guess; the point is the return, not the
+   * meaning of the input. */
+  u32 mode_rc = 0xFFFFFFFFu;
+  for (u32 mode = 0; mode < 4; ++mode) {
+    mode_rc = XUsbcamSetCaptureMode(mode);
+    SayLine("nui-plugin: cam_setcapturemode_rc=", mode_rc);
+  }
+
+  SayLine("nui-plugin: cam_setconfig_rc=", XUsbcamSetConfig(0, (u32)config_block, 0));
+  SayLine("nui-plugin: cam_getconfig_rc=", XUsbcamGetConfig((u32)config_block));
+  SayLine("nui-plugin: cam_setview_rc=", XUsbcamSetView(0));
+  SayLine("nui-plugin: cam_readframe_rc=", XUsbcamReadFrame(0, 0, (u32)cam_buffer, 0));
+  SayLine("nui-plugin: cam_destroy=", XUsbcamDestroy(handle));
+
+  /* Did anything land in the frame buffer? A device that reports success but
+   * writes nothing is worse than one that fails, so check rather than trust. */
+  unsigned int nonzero = 0;
+  for (unsigned int i = 0; i < 0x4B000u; i += 0x100u) {
+    if (cam_buffer[i] != 0) {
+      ++nonzero;
+    }
+  }
+  SayLine("nui-plugin: cam_buffer_nonzero_samples=", nonzero);
+
+  Say("nui-plugin: --- camera end");
+}
+
 static void probe(void) {
   /* XamNuiGetDeviceStatus writes 24 bytes; a real pointer or the guest hangs. */
   static u32 status_block[8];
@@ -86,6 +166,8 @@ static void probe(void) {
 
   Say("nui-plugin: start");
   NuiIpcInit(&ipc);
+
+  ProbeCamera();
 
   /* Ambient device state first, so the log shows both halves. */
   SayLine("nui-plugin: is_device_ready=", XamNuiIsDeviceReady());

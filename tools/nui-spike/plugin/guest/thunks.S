@@ -45,6 +45,17 @@
 /* xboxkrnl.exe - guest-callable xconfig write, so the plugin can change NUI state. xconfig lives on the HOST; guest RAM cannot reach it. */
 	THUNK thunk_ExReadModifyWriteXConfigSettingUlong, 0x2BC
 
+/* xboxkrnl.exe - the camera driver. The plugin drives this sequence itself and
+   prints every return, rather than inferring the contract from a title. */
+	THUNK thunk_XUsbcamCreate,             0x222
+	THUNK thunk_XUsbcamSetCaptureMode,     0x21A
+	THUNK thunk_XUsbcamSetConfig,          0x21C
+	THUNK thunk_XUsbcamGetConfig,          0x21B
+	THUNK thunk_XUsbcamSetView,            0x220
+	THUNK thunk_XUsbcamGetState,           0x21D
+	THUNK thunk_XUsbcamReadFrame,          0x21E
+	THUNK thunk_XUsbcamDestroy,            0x223
+
 /* Alias the public names onto the slots so C calls ordinary symbols. */
 	.set DbgPrint,                             thunk_DbgPrint
 	.set NtCreateFile,                         thunk_NtCreateFile
@@ -67,5 +78,21 @@
 	.globl XamNuiPlayerEngagementUpdate
 	.globl XamNuiSkeletonGetBestSkeletonIndex
 	.globl XNotifyBroadcast
+	.set XUsbcamCreate,           thunk_XUsbcamCreate
+	.set XUsbcamSetCaptureMode,   thunk_XUsbcamSetCaptureMode
+	.set XUsbcamSetConfig,        thunk_XUsbcamSetConfig
+	.set XUsbcamGetConfig,        thunk_XUsbcamGetConfig
+	.set XUsbcamSetView,          thunk_XUsbcamSetView
+	.set XUsbcamGetState,         thunk_XUsbcamGetState
+	.set XUsbcamReadFrame,        thunk_XUsbcamReadFrame
+	.set XUsbcamDestroy,          thunk_XUsbcamDestroy
 	.globl XMsgSystemProcessCall
 	.globl ExReadModifyWriteXConfigSettingUlong
+	.globl XUsbcamCreate
+	.globl XUsbcamSetCaptureMode
+	.globl XUsbcamSetConfig
+	.globl XUsbcamGetConfig
+	.globl XUsbcamSetView
+	.globl XUsbcamGetState
+	.globl XUsbcamReadFrame
+	.globl XUsbcamDestroy

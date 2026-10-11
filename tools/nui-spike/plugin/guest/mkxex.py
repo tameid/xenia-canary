@@ -79,6 +79,20 @@ IMPORTS = [
         (0x28E, 0x82002080),  # XNotifyBroadcast
         (0x1F6, 0x82002090),  # XMsgSystemProcessCall
     ]),
+    # The camera driver. Imported so the plugin can drive the sequence itself
+    # and print every return value, rather than inferring the contract from what
+    # a title happens to call. The dashboard registers a notify listener and
+    # never reaches Create, so it cannot answer these questions.
+    ("xboxkrnl.exe", 0, [
+        (0x222, 0x820020B0),  # XUsbcamCreate
+        (0x21A, 0x820020C0),  # XUsbcamSetCaptureMode
+        (0x21C, 0x820020D0),  # XUsbcamSetConfig
+        (0x21B, 0x820020E0),  # XUsbcamGetConfig
+        (0x220, 0x820020F0),  # XUsbcamSetView
+        (0x21D, 0x82002100),  # XUsbcamGetState
+        (0x21E, 0x82002110),  # XUsbcamReadFrame
+        (0x223, 0x82002120),  # XUsbcamDestroy
+    ]),
 ]
 
 # (info, page_count) in 64 KiB units, covering the whole image from base+0.
@@ -89,7 +103,12 @@ IMPORTS = [
 # Page 1 holds .data and must be DATA so it stays writable.
 PAGE_LAYOUT = [
     (SEC_CODE, 1),
-    (SEC_DATA, 1),
+    # Six data pages, not one. The camera frame buffer is 0x4B000 (640*480, one
+    # byte per pixel - the size xenia's own XUsbcamCreate documents), and .bss
+    # lives after .data, so it needs pages of its own. One page silently truncated
+    # the buffer: the guest ran the camera probe, then stopped dead before its
+    # first post-camera print, with no fault raised anywhere in the log.
+    (SEC_DATA, 6),
 ]
 
 SECTIONS = [
