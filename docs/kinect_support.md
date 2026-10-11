@@ -284,10 +284,14 @@ storage_root()/plugins/<TITLE_ID>/
 
 ---
 
-## 4a. Finding: xam has no skeleton consumer (measured 2026-10-11)
+## 4a. Finding: xam has no frame consumer, and "skeleton feed" was the wrong guess
 
-The plan assumed the plugin could feed xam by impersonating the device. It cannot,
-and the reason is worth recording because it changes what L2 is.
+Two corrections to the plan, both from measurement rather than reading the design doc.
+
+### Correction 1: the plugin cannot feed xam
+
+The plan assumed the plugin could impersonate the device to xam. It cannot, because
+there is nothing on the other side to receive a frame.
 
 **What the guest can do today.** The plugin calls `ExReadModifyWriteXConfigSettingUlong`
 (xboxkrnl `0x2BC`) to set `X_RETAIL_FLAGS::KinectInitialized`. This is the same
@@ -322,8 +326,7 @@ only the two export names — there is no storage, no ring buffer, no consumer. 
 **Consequences.**
 
 * L2 cannot be completed guest-side. Not "is hard" — cannot. There is no host state for
-  the frame to land in. Closing this needs a patch to xenia that adds the consumer
-  (skeleton storage in `xam_state`, and real implementations of the two stubs above).
+  the frame to land in. Closing this needs a patch to xenia that adds the consumer.
 * This does not undermine the provider or the wire format. The provider is correct and
   the guest decodes its frames; that is the half that was in doubt and it is settled.
   What is missing is entirely on the emulator side.
@@ -331,10 +334,49 @@ only the two export names — there is no storage, no ring buffer, no consumer. 
   flag and reads frames. Two real achievements, but the plan's framing overstated what
   was connected.
 
-**Revised order.** Build the xenia-side consumer first (skeleton storage +
-`XamNuiSkeletonGetBestSkeletonIndex` / `XamNuiPlayerEngagementUpdate`), then the guest
-plugin becomes a thin shim over an interface that already exists. Doing the guest side
-first, as planned, was backwards — it optimised the part that was already working.
+### Correction 2: skeletons are the wrong payload to optimise
+
+The plan treated a skeleton feed as the goal. That was inferred from the two xam
+ordinals that mention skeletons, which is the weakest possible evidence — it describes
+what xenia *happens to name*, not what a Kinect *is*.
+
+**On real hardware, depth is primary and skeleton is derived.** The NUI pipeline is
+depth camera → depth image → skeletal tracking engine → skeleton frame. The engine
+consumes depth to produce joints, so a device that emits only skeletons is emitting
+the *output* of the part we would most want to reproduce.
+
+This inverts the dependency, and it is the reason the plan was backwards. Emitting
+skeletons means reimplementing the tracking engine's *result* and hoping the title
+cannot tell. Emitting depth means the tracking problem stays where it belongs — and
+titles that consume depth directly (per §5, e.g. *Kinect Star Wars*) work at all,
+which a skeleton-only provider can never serve.
+
+**The wire format already reflects this**, which is reassuring — it was designed
+correctly and only the plan's framing was wrong. `NuiFrameHeader` carries
+`num_depth_frames`, `num_ir_frames` and `num_color_frames` alongside `num_skeletons`
+(`nui-provider/include/nui/frame.h:112-123`). The synthetic backend fills in only
+`num_skeletons`; the other three are zero.
+
+**What a real title imports is still unmeasured.** The obvious check — read the
+dashboard's own import table — is blocked: the installed NUIView XEX is a `LIVE`
+container (fourcc `0x4C495645`), and the embedded XEX2 is encrypted
+(`xex2_opt_file_format_info.encryption_type != 0`), so its import table is not
+readable without decryption. A `dumpxex.py` reader was written for this
+(`tools/nui-spike/plugin/guest/`) and does correctly parse the header and the
+`xex2_opt_import_libraries` string table; it stops at the encrypted image. Unencrypted
+XEXs remain readable through it.
+
+**So treat the depth-primary ordering as well-supported but not title-verified.**
+The reasoning rests on the documented NUI pipeline, not on a measurement of what this
+particular dashboard imports. Confirming it needs a decrypted XEX or a title running
+under a tracer. This is flagged rather than asserted because the whole reordering
+depends on it.
+
+**Revised order.** Depth first, in the provider and on the wire — it is the primitive
+the hardware produces and the one skeletons derive from. Then the xenia-side consumer.
+Then the guest plugin becomes a thin shim over an interface that already exists.
+Doing the guest side first, as planned, optimised the part that already worked, over a
+payload chosen by guesswork.
 
 ---
 
