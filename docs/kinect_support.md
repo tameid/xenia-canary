@@ -457,6 +457,59 @@ what `SetConfig`/`SetCaptureMode` want because it never calls them. The plugin-d
 probe (`smoke.ps1` and `ProbeCamera`) is the instrument that actually moves, and it
 is the one to keep extending.
 
+### NUIView, retried after patch 0002 (2026-10-11): blocked by its own UI, not by NUI
+
+Retried NUIView (title `4D5308FB`) now that patch 0002 implements the three device
+requests, which were **null imports** when this title was last measured. 90 s runs, with
+and without `nui_fake_device`:
+
+| export | flag off | flag on |
+| --- | --- | --- |
+| `PsCamDeviceRequest` | 2 | 2 |
+| `McaDeviceRequest` | 0 | 0 |
+| `DetroitDeviceRequest` | 0 | 0 |
+| `XamNuiGetDeviceStatus` | 0 | 0 |
+| `XamNuiIsDeviceReady` | 0 | 0 |
+| `XUsbcamGetState` | 0 | 0 |
+
+So patch 0002 did move something: `PsCamDeviceRequest` is now genuinely **called** (it was
+an `undefined extern call` before, which is why the runbook recorded the app bug-checking
+immediately afterwards). But it still calls no `XamNui*` export at all, and the flag makes
+no difference.
+
+**The blocker is upstream of NUI, and it is a UI asset failure.** NUIView's own
+`default.xex` contains:
+
+```
+fontfile=file://game:\NUIView.xzp
+scene=file://game:\NUIView.xzp
+skin=file://game:\NUIView.xzp
+```
+
+and the run ends with the guest's own error string:
+
+```
+Error: Failed loading skin
+```
+
+The path resolution explains it exactly:
+
+```
+StfsContainerDevice::ResolvePath(default.xex)   <- works, container is fine
+NullDevice::ResolvePath()  x6                    <- everything after it is empty
+```
+
+`GAME: => \Device\Content\1\` resolves to the null device, not to the STFS container that
+holds `NUIView.xzp`. So `default.xex` loads, then every asset lookup behind it finds
+nothing, the skin fails, and the app sits waiting on `XamInputGetKeystrokeEx` — an
+interactive prompt, not a Kinect wait.
+
+This is a content-mount problem, not a NUI problem, and it is a *different* problem from
+the dashboard's. It would need the container's file index mounted at `\Device\Content\1\`
+so `game:\NUIView.xzp` resolves. That is plausible to fix in xenia's content manager, but
+it is a separate piece of work from anything in this document, and until it is done
+NUIView cannot tell us anything about NUI — it never gets past its own first screen.
+
 ### `--nui_fake_device` was never actually set
 
 Every run so far passed `--nui_fake_device` on the command line and the log printed
