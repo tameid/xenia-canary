@@ -555,6 +555,55 @@ alongside the loose assets and is not needed — `default.xex` plus the loose fi
 complete, directly loadable layout. That is the same trick NUIView's container needed and
 did not get.
 
+### The Gunstringer reaches the Kinect tuner — and answers the layout question
+
+Manual GUI run of the same game (see above) got further than any headless run: the
+window shows **the Kinect Tuner screen** — a tracked-silhouette preview top-right, a camera
+box centre, "Grab me!" instruction. The game is sitting at its NUI setup stage, waiting.
+
+Two things fall out of its XEX headers, both measured:
+
+```
+XEX_SYSTEM_SKELETAL_TRACKING_REQUIRED      <- skeletal tracking is mandatory
+```
+
+and a static-library list that names the real NUI stack:
+
+```
+XCAM     : 2.0.20764.0     the camera driver
+NUI      : 2.0.20764.3
+NUIHNDL  : 2.0.20764.0     NUI handles
+NUISP    : 2.0.20764.3     NUI Simple Player - the device layer
+NUIAUD   : 2.0.20764.0     NUI audio
+```
+
+So the 360 NUI stack is **five** static libraries, not one, and `NUISP` is the player-side
+device layer — which is why the `XamNui*` exports are a thin management surface rather
+than the data path.
+
+**The import table settles the frame-layout question** that has been open since the
+dashboard measurement. This title imports the whole `XUsbcam*` family:
+
+| ordinal | import | xenia |
+| --- | --- | --- |
+| `0x222` | `XUsbcamCreate` | impl (allocates `0x4B000`) |
+| `0x21A` | `XUsbcamSetCaptureMode` | impl (our logging stub) |
+| `0x21C` | `XUsbcamSetConfig` | impl (our logging stub) |
+| `0x220` | `XUsbcamSetView` | impl (our logging stub) |
+| `0x21D` | `XUsbcamGetState` | impl |
+| `0x21E` | **`XUsbcamReadFrame`** | impl (our stub, returns NOT_IMPLEMENTED) |
+| `0x223` | `XUsbcamDestroy` | impl (our logging stub) |
+| `0x30D` | `PsCamDeviceRequest` | impl (patch 0002) |
+
+plus the tilt/elevation group (`0x880`, `0x883`, `0x865`, `0x86D`, `0x895`) and the identity
+group (`0x873`, `0x86A`, `0x863`). **The camera-driver contract is confirmed by a real
+consumer** — independently of the dashboard, which imports the same family but never calls
+it.
+
+It has still made zero runtime NUI calls, so the stubs are not yet logging what it passes.
+What is now known: it *wants* exactly the family we instrumented, and the stubs will answer
+the moment it reaches them. That is a much stronger position than the dashboard gave us.
+
 ### `--nui_fake_device` was never actually set
 
 Every run so far passed `--nui_fake_device` on the command line and the log printed
