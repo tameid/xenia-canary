@@ -401,6 +401,53 @@ So the emulator-side work is concrete and bounded: implement the `XUsbcam*` devi
 provider, and only then worry about the skeleton exports — which on real hardware are
 fed by the tracking engine sitting above this layer, not by the guest.
 
+### The gate is a notification, not a return value (measured 2026-10-11)
+
+Logging stubs added for the whole `XUsbcam*` family, then run against the dashboard.
+They never fire. The dashboard's entire NUI call sequence is three calls:
+
+```
+XamNuiHudSetEngagedTrackingID(0)
+XamNuiGetDeviceStatus(ptr)
+XUsbcamGetState()          -> 0x00000003 (initialised + connected, with the flag on)
+```
+
+and then it registers `XamNotifyCreateListenerInternal(0x23, 1, 8)` and waits. It never
+calls `XUsbcamCreate`, `SetConfig`, `SetCaptureMode` or `ReadFrame` — so no amount of
+implementing the camera device will be reached, because the guest has not decided it
+wants one yet.
+
+**The dashboard is event-driven, not poll-driven.** It listens for
+`kXNotificationSystemNUIHardwareStatusChanged` (`xbox.h:217`) and only probes the
+camera once told a device appeared. Every earlier reading of this chain — including the
+runbook's "the gate is `XUsbcamGetState`" — was inferred from the guest *spinning* on
+that call, not from the guest *waiting* for an event it never receives.
+
+So the next emulator-side step is not `XUsbcamReadFrame`. It is broadcasting
+`kXNotificationSystemNUIHardwareStatusChanged` when the device state changes. The stubs
+stay, because once that notification lands they are what reveal the capture mode and
+frame layout.
+
+### `--nui_fake_device` was never actually set
+
+Every run so far passed `--nui_fake_device` on the command line and the log printed
+`nui_fake_device = false`. xenia only parses command-line cvar overrides on Android
+(`base/cvar_android.cc`; the Windows build reads them from
+`storage_root/xenia-canary.config.toml`). Every prior "the flag works" conclusion from
+this host was therefore not testing what it claimed to be.
+
+Correct invocation, verified working:
+
+```toml
+# <store>/xenia-canary.config.toml, under [Kernel]
+nui_fake_device = true
+```
+
+With it genuinely on, `XUsbcamGetState` returns `0x00000003` and the dashboard advances
+to the notify-listener stage. That is real progress, and it is *different* progress from
+what was previously reported — it reaches the listener rather than stopping at the
+camera probe.
+
 **Revised order.** Depth first, in the provider and on the wire — it is the primitive
 the hardware produces and the one skeletons derive from. Then the xenia-side consumer.
 Then the guest plugin becomes a thin shim over an interface that already exists.
