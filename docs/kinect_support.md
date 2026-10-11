@@ -668,6 +668,74 @@ Then the guest plugin becomes a thin shim over an interface that already exists.
 Doing the guest side first, as planned, optimised the part that already worked, over a
 payload chosen by guesswork.
 
+### Kinect Adventures: the NUI gate is a bit we never set, not a bit we guessed (2026-10-11)
+
+Microsoft's own first-party Kinect title gets further than any other candidate and fails
+in a way that is diagnostic. Run at `--log_level 3` (level 2 prints no export calls at
+all, which had been hiding this) it produces exactly one NUI call before faulting:
+
+```
+XamNuiGetDeviceStatus(7018F680)
+XamShowNuiHardwareRequiredUI(00000001)
+```
+
+and then, once the player presses X at the "launch the Kinect Tuner" prompt:
+
+```
+XamShowNuiTroubleshooterUI(000000FF, 00000000, 00000000)   x6
+```
+
+`0xFF` is the fixed user index xenia passes internally for a generic hardware fault. The
+title never calls `PsCamDeviceRequest`, `McaDeviceRequest`, `DetroitDeviceRequest` or any
+`XUsbcam*` export — the camera driver is never touched, because the title concludes there
+is no camera before it gets that far.
+
+Three distinct defects were behind this, all in `xam_nui.cc`:
+
+**1. `X_RETAIL_FLAGS::KinectInitialized` is never set, by anything.** Both
+`XamNuiGetDeviceStatus` and `XamNuiIsDeviceReady` keyed solely off it. On a real 360 the
+Kinect tuner writes it during setup; xenia has no tuner, so it can only ever read clear.
+Measured directly rather than assumed:
+
+```
+NUITRACE retail_flags=00000040 kinect_initialized=0
+```
+
+Note this invalidates an earlier claim in this document that the flag was "set" in the
+test store. That was established by scanning `xconfig.settings` for *any* uint32 with bit
+`0x20000000` set — a 6680-byte blob that is almost certain to contain a false positive.
+The flag was never set, in any store. Both exports now treat `nui_fake_device` as implying
+initialisation, which is what that cvar already claims to do.
+
+**2. `XamNuiIsDeviceReady` ANDed the cvar with the flag.** It required *both*, so with no
+tuner to set the flag it could only ever return "not ready", whatever the cvar said.
+
+**3. `status[3]` is a bitfield, not a boolean.** The export wrote
+`status = kinect_initialized`, i.e. bit 0 only. The reverse-engineering notes on the
+export itself record that the failure path sets `0x20` and the success paths set
+`(| 0x44)` or `(| 0x40)` — so bit 5 means "problem" and bit 6 means "present". Bit 0
+alone is the one combination no caller can act on.
+
+Measured, same title, same store, flag genuinely on:
+
+| `status` | Troubleshooter | HardwareRequired |
+| --- | --- | --- |
+| `0x01` | 3 | 0 |
+| `0x44` | 0 | 1 |
+
+So the title *is* reading `status[3]` and branching on it — which makes the field a
+sweepable target rather than a guess. `nui_status_override` (int, `-1` = derive) exists
+for exactly that.
+
+**Separate upstream bug:** `XamShowNuiHardwareRequiredUI_entry` begins
+`if (unk1 != 0) return X_ERROR_INVALID_PARAMETER;`. The one value a Kinect-required
+Microsoft title actually passes is `1`, so the request is rejected and no dialog appears
+at all. That guard looks wrong and is worth reporting upstream independently of this work.
+
+**Still unproven:** with every value tried, the camera path is never entered. No
+`PsCamDeviceRequest` or `XUsbcam*` call has been observed from any real title, on any
+store, with any flag combination.
+
 ---
 
 ## 5. L1 — patches (data-only, per title)

@@ -20,6 +20,9 @@
 // declared here at global scope too - declaring it inside namespace xam would
 // look for xe::kernel::xam::cvars::nui_fake_device and fail to link.
 DECLARE_bool(nui_fake_device);
+// PHASE 0 SPIKE. Lets a status value be swept from the config file without a
+// rebuild per value. -1 means "use the value derived below".
+DECLARE_int32(nui_status_override);
 
 namespace xe {
 namespace kernel {
@@ -99,6 +102,12 @@ dword_result_t XamNuiGetDeviceStatus_entry(
   // XUsbcam*. 0xFF is the fixed user-index xam passes for a generic hardware
   // fault, and it never retried, so there is no later call to correct it.
   status_ptr->status = kinect_initialized ? 0x44 : 0x20;
+  if (cvars::nui_status_override >= 0) {
+    status_ptr->status = static_cast<uint32_t>(cvars::nui_status_override);
+  }
+  XELOGKERNEL("NUITRACE retail_flags={:08X} kinect_initialized={} status={:X}",
+              retail_flags, kinect_initialized ? 1u : 0u,
+              static_cast<uint32_t>(status_ptr->status));
   return kinect_initialized ? X_ERROR_SUCCESS : 0xC0050006;
 }
 DECLARE_XAM_EXPORT1(XamNuiGetDeviceStatus, kNone, kStub);

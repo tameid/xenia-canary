@@ -89,4 +89,11 @@ DEFINE_bool(
     " Only for tracing which APIs a title calls; not a working Kinect.",
     "Kernel");
 
+DEFINE_int32(
+    nui_status_override, -1,
+    "PHASE 0 SPIKE. Force the value XamNuiGetDeviceStatus writes into "
+    "status[3]. -1 derives it from the device state. Lets the bit pattern a "
+    "title actually wants be swept from the config file without a rebuild.",
+    "Kernel");
+
 DECLARE_XBOXKRNL_EMPTY_REGISTER_EXPORTS(Nui);
