@@ -357,20 +357,49 @@ correctly and only the plan's framing was wrong. `NuiFrameHeader` carries
 (`nui-provider/include/nui/frame.h:112-123`). The synthetic backend fills in only
 `num_skeletons`; the other three are zero.
 
-**What a real title imports is still unmeasured.** The obvious check — read the
-dashboard's own import table — is blocked: the installed NUIView XEX is a `LIVE`
-container (fourcc `0x4C495645`), and the embedded XEX2 is encrypted
-(`xex2_opt_file_format_info.encryption_type != 0`), so its import table is not
-readable without decryption. A `dumpxex.py` reader was written for this
-(`tools/nui-spike/plugin/guest/`) and does correctly parse the header and the
-`xex2_opt_import_libraries` string table; it stops at the encrypted image. Unencrypted
-XEXs remain readable through it.
+**What a real title imports — measured (2026-10-11, supersedes the "unmeasured" note)**
 
-**So treat the depth-primary ordering as well-supported but not title-verified.**
-The reasoning rests on the documented NUI pipeline, not on a measurement of what this
-particular dashboard imports. Confirming it needs a decrypted XEX or a title running
-under a tracer. This is flagged rather than asserted because the whole reordering
-depends on it.
+The obvious blocker was that the installed NUIView XEX is a `LIVE` container whose
+embedded image is encrypted. But the *official Kinect dashboard* (`$flash_dash.xex`,
+NXE Kinect flash) is not encrypted, and xenia dumps a module's import table at load
+time (`user_module.cc:1199`, marking unimplemented ones `!!`). So this was never
+unmeasurable — only NUIView was.
+
+Measured on the dashboard's own import table:
+
+| ordinal | import | xenia |
+| --- | --- | --- |
+| `0x21D` | `XUsbcamGetState` | implemented (stub returns a constant) |
+| `0x222` | `XUsbcamCreate` | implemented (allocates `0x4B000` = 640×480) |
+| `0x21E` | **`XUsbcamReadFrame`** | **STUB** |
+| `0x21A`/`0x21B`/`0x21C`/`0x220`/`0x223` | `SetCaptureMode`/`GetConfig`/`SetConfig`/`SetView`/`Destroy` | STUB |
+| `0x885` | `XamNuiGetDeviceStatus` | implemented (reads the retail flag) |
+| `0x890` | `XamNuiIsDeviceReady` | implemented (the `>> 1` bug) |
+| `0x892` | `XamNuiPlayerEngagementUpdate` | stub, empty body |
+| `0x893` | `XamNuiSkeletonGetBestSkeletonIndex` | stub, returns `-1` |
+| `0x894` | `XamNuiSkeletonScoreUpdate` | STUB |
+| `0x47D` | `XamShowNuiHardwareRequiredUI` | implemented |
+| `0x46B` | `XamShowNuiTroubleshooterUI` | implemented |
+
+Two things fall out, and both matter more than the ordering argument did.
+
+**The frame path is `XUsbcamReadFrame` (0x21E), not the skeleton exports.** The
+dashboard imports the whole `XUsbcam*` family and treats it as a *camera device*:
+`Create` → `SetCaptureMode` → `SetConfig` → `GetState` → `ReadFrame`. That is a
+camera driver's contract, and it is where depth arrives. `XUsbcamCreate`'s existing
+`0x4B000` buffer — exactly 640×480 — is the frame buffer. This confirms the
+depth-primary conclusion by measurement rather than by argument, and it identifies
+the specific export to implement.
+
+**The dashboard statically links `XCAM`.** Its `XEX_HEADER_STATIC_LIBRARIES` list
+includes `XCAM 2.0.20141.0` alongside XAPILIB/XBOXKRNL/XGRAPHC. That is a separate
+camera library, and it means the 360's camera stack is its own component rather than
+part of xam — which is consistent with `xam.xex` being a thin shim over it in xenia.
+
+So the emulator-side work is concrete and bounded: implement the `XUsbcam*` device
+(`Create`/`SetCaptureMode`/`SetConfig`/`GetState`/`ReadFrame`), feed it depth from the
+provider, and only then worry about the skeleton exports — which on real hardware are
+fed by the tracking engine sitting above this layer, not by the guest.
 
 **Revised order.** Depth first, in the provider and on the wire — it is the primitive
 the hardware produces and the one skeletons derive from. Then the xenia-side consumer.

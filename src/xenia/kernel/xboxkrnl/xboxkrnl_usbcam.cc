@@ -11,6 +11,9 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/xbox.h"
 
+// Defined in xboxkrnl_nui.cc (part of the Phase 0 spike patches).
+DECLARE_bool(nui_fake_device);
+
 namespace xe {
 namespace kernel {
 namespace xboxkrnl {
@@ -36,6 +39,15 @@ enum class XUsbCamState : uint32_t {
 };
 
 dword_result_t XUsbcamGetState_entry() {
+  // PHASE 0 SPIKE: with nui_fake_device, report the camera as initialised and
+  // connected. The Kinect dashboard's NUI init chain is
+  //   XamNuiGetDeviceStatus -> XUsbcamGetState -> ...
+  // and it gives up (black screen) the moment this says "not connected"; no
+  // frame data backs the claim, it only lets the guest walk its init path.
+  if (cvars::nui_fake_device) {
+    return static_cast<uint32_t>(XUsbCamState::CamInitilizied) |
+           static_cast<uint32_t>(XUsbCamState::CamConnected);
+  }
   return static_cast<uint32_t>(XUsbCamState::CamNotConnected);
 }
 DECLARE_XBOXKRNL_EXPORT1(XUsbcamGetState, kNone, kStub);

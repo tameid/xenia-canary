@@ -15,6 +15,12 @@
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/xbox.h"
 
+// PHASE 0 SPIKE PATCH 0003 (see tools/nui-spike/).
+// Defined at global scope in xboxkrnl_nui.cc by patch 0002, so it must be
+// declared here at global scope too - declaring it inside namespace xam would
+// look for xe::kernel::xam::cvars::nui_fake_device and fail to link.
+DECLARE_bool(nui_fake_device);
+
 namespace xe {
 namespace kernel {
 namespace xam {
@@ -196,7 +202,25 @@ dword_result_t XamNuiIsDeviceReady_entry() {
           X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS) &
       X_RETAIL_FLAGS::KinectInitialized;
 
-  return kinect_initialized >> 1 & 1;
+  // PHASE 0 SPIKE (0003). This used to be:
+  //
+  //     return kinect_initialized >> 1 & 1;
+  //
+  // kinect_initialized is a bool, so it is 0 or 1 and the shift makes the result
+  // 0 either way. XamNuiIsDeviceReady could therefore never report a ready
+  // device, for any retail-flag value. Measured against the Kinect dashboard:
+  // with the Kinect flag set and a connected camera reported, the guest called
+  // this export 1096 times and received 0 every time, then kept waiting.
+  // XamNuiHudIsEnabled and XamNuiIdentityEnrollForSignIn are gated on the same
+  // value, so none of the NUI sign-in flow could ever start.
+  //
+  // Report the NUI hardware status the comment above describes instead. There is
+  // no hardware behind this until a NUI source is attached, so with no source
+  // the answer stays "not ready" and behaviour is unchanged.
+  if (!kinect_initialized || !cvars::nui_fake_device) {
+    return 0;
+  }
+  return 0x0001;
 }
 DECLARE_XAM_EXPORT1(XamNuiIsDeviceReady, kNone, kImplemented);
 
